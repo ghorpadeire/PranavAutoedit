@@ -1,0 +1,21 @@
+# Premiere project files
+*.prproj
+Adobe Premiere Pro Auto-Save/
+
+# Large transcript JSON files (sample data — not for version control)
+*.mp4.json
+Sequence*.json
+removals.json
+
+# Generated transcript text exports
+*_BEFORE.txt
+*_AFTER.txt
+
+# Claude internal
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
