@@ -306,7 +306,7 @@
 <!-- ═══════════════════════════════════════════ -->
 <div class="hdr">
   <div style="flex:1">
-    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.6</span></div>
+    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.7</span></div>
     <div class="hdr-status">
       <div class="status-dot" id="statusDot"></div>
       <span id="statusText">Ready — load a transcript to start</span>
@@ -1060,20 +1060,37 @@ applyBtn.addEventListener('click', async () => {
       setStatus(`Cutting timeline (${cutRanges.length} ranges)…`, 'busy');
       setProgress(20);
 
-      /* 1. Collect every CLIP track item across all V/A tracks */
+      /* ── Resolve API constants from the official ppro module. The values
+       *    are integers but the named constants are required by the engine
+       *    (passing magic 0 for MediaType causes "Script action failed
+       *    to execute" in createRemoveItemsAction). ── */
+      const TYPE_CLIP   = (ppro.Constants && ppro.Constants.TrackItemType  && ppro.Constants.TrackItemType.CLIP);
+      const MTYPE_VIDEO = (ppro.Constants && ppro.Constants.MediaType      && ppro.Constants.MediaType.VIDEO);
+      if (TYPE_CLIP === undefined || MTYPE_VIDEO === undefined) {
+        throw new Error(`Missing ppro.Constants — TrackItemType=${typeof ppro.Constants?.TrackItemType}, MediaType=${typeof ppro.Constants?.MediaType}`);
+      }
+
+      /* 1. Collect every CLIP track item across all V/A tracks.
+       *    Per Adobe samples (sequence.ts:218): track.getTrackItems is
+       *    SYNC and accepts the named TrackItemType constant. */
       const vCount = await seq.getVideoTrackCount();
       const aCount = await seq.getAudioTrackCount();
-      const allItems = [];   // {item, trackIdx, mediaType, segStart, segEnd, mediaIn, projectItem}
+      const allItems = [];   // {item, trackIdx, mediaType, segStart, segEnd, mediaIn, clipProjectItem}
 
       const collect = async (track, trackIdx, mediaType) => {
         if (!track || typeof track.getTrackItems !== 'function') return;
-        const items = track.getTrackItems(1, false); // CLIP=1, includeEmpty=false
+        const items = track.getTrackItems(TYPE_CLIP, false);
         for (const item of items) {
-          const segStart = (await item.getStartTime()).seconds;
-          const segEnd   = (await item.getEndTime()).seconds;
-          const mediaIn  = (await item.getInPoint()).seconds;
-          const projectItem = await item.getProjectItem();
-          allItems.push({ item, trackIdx, mediaType, segStart, segEnd, mediaIn, projectItem });
+          const segStart   = (await item.getStartTime()).seconds;
+          const segEnd     = (await item.getEndTime()).seconds;
+          const mediaIn    = (await item.getInPoint()).seconds;
+          const projItem   = await item.getProjectItem();
+          /* Cast ProjectItem to ClipProjectItem so createSetInOutPointsAction
+           * is callable. Per Adobe sample sequence.ts:337-340. */
+          let   clipProj   = null;
+          try { clipProj   = await ppro.ClipProjectItem.cast(projItem); } catch (_) {}
+          allItems.push({ item, trackIdx, mediaType, segStart, segEnd, mediaIn,
+                          projectItem: projItem, clipProjectItem: clipProj });
         }
       };
       for (let i = 0; i < vCount; i++) await collect(await seq.getVideoTrack(i), i, 'video');
@@ -1083,7 +1100,7 @@ applyBtn.addEventListener('click', async () => {
       setProgress(40);
 
       /* 2. For each item, compute keep-segments (parts NOT inside any cut) */
-      const keeps = []; // {trackIdx, mediaType, oldStart, mediaIn, mediaOut, projectItem, dur}
+      const keeps = []; // {trackIdx, mediaType, oldStart, mediaIn, mediaOut, projectItem, clipProjectItem, dur}
       for (const it of allItems) {
         let parts = [{ s: it.segStart, e: it.segEnd, mOff: 0 }];
         for (const cut of cutRanges) {
@@ -1102,7 +1119,9 @@ applyBtn.addEventListener('click', async () => {
           if (p.e - p.s < 0.04) continue; // skip sub-frame slivers
           keeps.push({
             trackIdx: it.trackIdx, mediaType: it.mediaType,
-            oldStart: p.s, projectItem: it.projectItem,
+            oldStart: p.s,
+            projectItem:     it.projectItem,
+            clipProjectItem: it.clipProjectItem,
             mediaIn:  it.mediaIn + p.mOff,
             mediaOut: it.mediaIn + p.mOff + (p.e - p.s),
             dur: p.e - p.s,
@@ -1111,96 +1130,98 @@ applyBtn.addEventListener('click', async () => {
       }
 
       /* 3. Compute rippled new positions: shift each keep left by total cut
-       *    duration that occurs before its old start time */
+       *    duration occurring before its old start. */
       for (const k of keeps) {
         let shift = 0;
-        for (const cut of cutRanges) {
-          if (cut.end <= k.oldStart) shift += (cut.end - cut.start);
-        }
+        for (const cut of cutRanges) if (cut.end <= k.oldStart) shift += (cut.end - cut.start);
         k.newStart = k.oldStart - shift;
       }
 
-      /* 3b. DEDUPE keep segments. The source media has both V and A channels,
-       *     so V1 + A1 + A2 + A3 from the same source produce 4 identical keep
-       *     segments per cut-interval. We only need ONE overwrite per
-       *     (projectItem, oldStart, oldEnd) — Premiere routes A/V channels
-       *     automatically when overwriting from the source projectItem. */
-      const dedupeKey = k => `${k.projectItem && k.projectItem.getId ? k.projectItem.getId() : '?'}|${k.oldStart.toFixed(4)}|${k.mediaIn.toFixed(4)}|${(k.mediaIn + k.dur).toFixed(4)}`;
+      /* 3b. DEDUPE — V1 + A1 + A2 + A3 from same source produce 4 identical
+       *     keep segments per cut. One overwrite per (clipProjectItem, oldStart,
+       *     mediaIn, mediaOut) is enough; Premiere routes A/V automatically. */
       const seenKeeps = new Map();
       for (const k of keeps) {
-        const key = dedupeKey(k);
+        const id = (k.clipProjectItem && k.clipProjectItem.getId) ? k.clipProjectItem.getId()
+                 : (k.projectItem && k.projectItem.getId)         ? k.projectItem.getId() : '?';
+        const key = `${id}|${k.oldStart.toFixed(4)}|${k.mediaIn.toFixed(4)}|${k.mediaOut.toFixed(4)}`;
         if (!seenKeeps.has(key)) seenKeeps.set(key, k);
       }
       const uniqueKeeps = [...seenKeeps.values()].sort((a, b) => a.newStart - b.newStart);
       setProgress(55);
 
-      const editor = ppro.SequenceEditor.getEditor(seq);
-      if (!editor) throw new Error('SequenceEditor.getEditor returned null.');
-      const MEDIA_ANY = (ppro.Constants && ppro.Constants.MediaType && ppro.Constants.MediaType.ANY) || 0;
-
-      /* 4. PHASE 1 — Remove every original item in ONE locked transaction.
-       *    Build the selection + remove action up front, then execute. */
-      let selection;
-      ppro.TrackItemSelection.createEmptySelection(s => { selection = s; });
-      if (!selection) throw new Error('createEmptySelection returned no selection.');
-      for (const it of allItems) selection.addItem(it.item);
-
-      const removeAct = editor.createRemoveItemsAction(selection, false, MEDIA_ANY, false);
-      if (!removeAct) throw new Error('createRemoveItemsAction returned null.');
-
+      /* ── PHASE 1: REMOVE every original track item ──────────────────────
+       *    Per Adobe sample sequenceEditor.ts:163-172 the canonical pattern
+       *    is: action creation INSIDE lockedAccess, ripple=true,
+       *    third arg = MediaType.VIDEO (frame-alignment, not "what types
+       *    to remove"). Selection built via sequence.getSelection() which
+       *    returns the existing selection object whose addItem actually
+       *    works (createEmptySelection's addItem is unreliable). */
       let removeOk = false;
+      let removeErr = '';
       project.lockedAccess(() => {
-        removeOk = project.executeTransaction(compound => {
-          compound.addAction(removeAct);
-        }, `Filler Remover — clear timeline`);
+        try {
+          const editor = ppro.SequenceEditor.getEditor(seq);
+          if (!editor) throw new Error('SequenceEditor.getEditor returned null');
+          /* getSelection is async; we already entered locked block, so resolve
+           * synchronously via .then() is not possible. Trick: getSelection
+           * inside lockedAccess returns immediately because state is frozen. */
+          /* Actually getSelection() returns a Promise. Hack: iterate items
+           * we already collected, build via createEmptySelection which IS
+           * documented to work for items we addItem manually. */
+          let sel;
+          ppro.TrackItemSelection.createEmptySelection(s => { sel = s; });
+          if (!sel) throw new Error('createEmptySelection callback returned no selection');
+          for (const it of allItems) sel.addItem(it.item, false);
+
+          const removeAct = editor.createRemoveItemsAction(sel, true, MTYPE_VIDEO);
+          if (!removeAct) throw new Error('createRemoveItemsAction returned null');
+          removeOk = project.executeTransaction(c => c.addAction(removeAct),
+                       `Filler Remover — clear timeline`);
+        } catch (e) { removeErr = e.message || String(e); }
       });
-      if (!removeOk) throw new Error('Phase 1 (remove all items) refused by Premiere.');
+      if (!removeOk) throw new Error(`Phase 1 (remove items) failed: ${removeErr || 'transaction refused'}`);
       setProgress(65);
 
-      /* 5. PHASE 2 — Insert each keep segment in its OWN transaction.
-       *    Per-segment isolation means: (a) if one fails, others still
-       *    succeed; (b) the source's in/out is set immediately before its
-       *    overwrite, so values can't be stomped by later actions in the
-       *    same transaction. Track indices fixed at 0/0; Premiere auto-
-       *    routes A/V channels from the source projectItem. */
+      /* ── PHASE 2: INSERT keep segments, one per locked transaction ──────
+       *    Action creation INSIDE the lockedAccess callback (Adobe pattern).
+       *    Per-segment isolation lets one failure NOT block others. */
       let inserted = 0, failures = [];
       for (let i = 0; i < uniqueKeeps.length; i++) {
         const k = uniqueKeeps[i];
-        try {
-          const inT    = ppro.TickTime.createWithSeconds(k.mediaIn);
-          const outT   = ppro.TickTime.createWithSeconds(k.mediaIn + k.dur);
-          const startT = ppro.TickTime.createWithSeconds(k.newStart);
+        let segOk = false, segErr = '';
+        project.lockedAccess(() => {
+          try {
+            const editor = ppro.SequenceEditor.getEditor(seq);
+            const inT    = ppro.TickTime.createWithSeconds(k.mediaIn);
+            const outT   = ppro.TickTime.createWithSeconds(k.mediaOut);
+            const startT = ppro.TickTime.createWithSeconds(k.newStart);
 
-          const setIO = (k.projectItem && typeof k.projectItem.createSetInOutPointsAction === 'function')
-                       ? k.projectItem.createSetInOutPointsAction(inT, outT) : null;
-          const ow    = editor.createOverwriteItemAction(k.projectItem, startT, 0, 0);
-          if (!ow) throw new Error('createOverwriteItemAction returned null');
+            const setIO = (k.clipProjectItem && typeof k.clipProjectItem.createSetInOutPointsAction === 'function')
+                         ? k.clipProjectItem.createSetInOutPointsAction(inT, outT) : null;
+            const piForOverwrite = k.clipProjectItem || k.projectItem;
+            const ow    = editor.createOverwriteItemAction(piForOverwrite, startT, 0, 0);
+            if (!ow) throw new Error('createOverwriteItemAction returned null');
 
-          let segOk = false;
-          project.lockedAccess(() => {
-            segOk = project.executeTransaction(compound => {
-              if (setIO) compound.addAction(setIO);
-              compound.addAction(ow);
-            }, `Filler Remover — keep segment ${i + 1}/${uniqueKeeps.length}`);
-          });
-          if (segOk) inserted++;
-          else       failures.push(`#${i + 1} @ ${k.newStart.toFixed(2)}s: transaction refused`);
-        } catch (segErr) {
-          failures.push(`#${i + 1} @ ${k.newStart.toFixed(2)}s: ${segErr.message}`);
-        }
+            segOk = project.executeTransaction(c => {
+              if (setIO) c.addAction(setIO);
+              c.addAction(ow);
+            }, `Filler Remover — segment ${i + 1}/${uniqueKeeps.length}`);
+          } catch (e) { segErr = e.message || String(e); }
+        });
+        if (segOk) inserted++;
+        else       failures.push(`#${i + 1} @ ${k.newStart.toFixed(2)}s: ${segErr || 'transaction refused'}`);
         setProgress(65 + 33 * ((i + 1) / uniqueKeeps.length));
       }
 
       if (inserted === 0) {
         throw new Error(
           `Phase 2 inserted 0/${uniqueKeeps.length} segments.\n` +
-          `Errors:\n${failures.slice(0, 5).join('\n')}` +
+          `Sample errors:\n${failures.slice(0, 5).join('\n')}` +
           (failures.length > 5 ? `\n…and ${failures.length - 5} more` : '')
         );
       }
-      if (failures.length) {
-        console.warn(`[FillerRemover] partial success: ${inserted}/${uniqueKeeps.length} kept`, failures);
-      }
+      if (failures.length) console.warn(`[FillerRemover] partial: ${inserted}/${uniqueKeeps.length}`, failures);
       setProgress(100);
 
     } catch (cutErr) {
