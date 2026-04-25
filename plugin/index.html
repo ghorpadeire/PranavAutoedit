@@ -284,7 +284,7 @@
 <!-- ═══════════════════════════════════════════ -->
 <div class="hdr">
   <div style="flex:1">
-    <div class="hdr-title">Filler Remover</div>
+    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.1</span></div>
     <div class="hdr-status">
       <div class="status-dot" id="statusDot"></div>
       <span id="statusText">Ready — load a transcript to start</span>
@@ -882,47 +882,43 @@ copyAllBtn.addEventListener('click', () => {
  * We try all known patterns and surface a clear diagnostic if none work.
  */
 async function resolveActiveSequence(ppro) {
-  /* --- Pattern 1: ppro.app.getActiveSequence() (v22–25) --- */
+  /* --- CANONICAL Premiere Pro 25+/26+ API (per official TypeScript types):
+   *     ppro.Project.getActiveProject() → project.getActiveSequence()
+   *
+   * Source: AdobeDocs/uxp-premiere-pro types.d.ts:
+   *   ProjectStatic.getActiveProject(): Promise<Project>
+   *   Project.getActiveSequence(): Promise<Sequence>
+   * --- */
+  if (ppro.Project && typeof ppro.Project.getActiveProject === 'function') {
+    const proj = await ppro.Project.getActiveProject();
+    if (!proj) {
+      throw new Error('No project is open. Open a Premiere project first.');
+    }
+    if (typeof proj.getActiveSequence !== 'function') {
+      const projMethods = Object.getOwnPropertyNames(Object.getPrototypeOf(proj) || proj).join(', ');
+      throw new Error(`Project loaded but getActiveSequence missing.\nProject methods: ${projMethods}`);
+    }
+    const seq = await proj.getActiveSequence();
+    if (!seq) {
+      throw new Error(
+        'A project is open but no sequence is active.\n' +
+        'Drag a clip into the timeline (or double-click a sequence in the Project panel), then try again.'
+      );
+    }
+    return seq;
+  }
+
+  /* --- Legacy fallback for older Premiere versions (v22–24) --- */
   if (ppro.app && typeof ppro.app.getActiveSequence === 'function') {
     const seq = await ppro.app.getActiveSequence();
     if (seq) return seq;
   }
-
-  /* --- Pattern 2: ppro.app.getActiveProject() → project.getActiveSequence() (v26+) --- */
   if (ppro.app && typeof ppro.app.getActiveProject === 'function') {
     const proj = await ppro.app.getActiveProject();
     if (proj && typeof proj.getActiveSequence === 'function') {
       const seq = await proj.getActiveSequence();
       if (seq) return seq;
     }
-  }
-
-  /* --- Pattern 3: ppro is the Application directly --- */
-  if (typeof ppro.getActiveSequence === 'function') {
-    const seq = await ppro.getActiveSequence();
-    if (seq) return seq;
-  }
-  if (typeof ppro.getActiveProject === 'function') {
-    const proj = await ppro.getActiveProject();
-    if (proj && typeof proj.getActiveSequence === 'function') {
-      const seq = await proj.getActiveSequence();
-      if (seq) return seq;
-    }
-  }
-
-  /* --- Pattern 4: ppro.Project.getActiveProject() — Premiere Pro 26.x static API --- */
-  if (ppro.Project && typeof ppro.Project.getActiveProject === 'function') {
-    const proj = await ppro.Project.getActiveProject();
-    if (proj && typeof proj.getActiveSequence === 'function') {
-      const seq = await proj.getActiveSequence();
-      if (seq) return seq;
-    }
-  }
-
-  /* --- Pattern 5: ppro.Sequence.getActiveSequence() — flat static --- */
-  if (ppro.Sequence && typeof ppro.Sequence.getActiveSequence === 'function') {
-    const seq = await ppro.Sequence.getActiveSequence();
-    if (seq) return seq;
   }
 
   /* --- Diagnostic: show what the module actually exposes --- */
