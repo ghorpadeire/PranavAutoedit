@@ -306,7 +306,7 @@
 <!-- ═══════════════════════════════════════════ -->
 <div class="hdr">
   <div style="flex:1">
-    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.8</span></div>
+    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.9</span></div>
     <div class="hdr-status">
       <div class="status-dot" id="statusDot"></div>
       <span id="statusText">Ready — load a transcript to start</span>
@@ -1152,14 +1152,15 @@ applyBtn.addEventListener('click', async () => {
       if (!removeOk) throw new Error(`Ripple-delete failed: ${removeErr || 'transaction refused'}`);
 
       /* If there are remaining unsplittable cuts (cuts inside surviving clips),
-       * we still place markers for those so the user can do them manually. */
-      if (unsplittableCount > 0) {
+       * we still place markers for those so the user can do them manually.
+       * Use the same correct constant ppro.Marker.MARKER_TYPE_COMMENT. */
+      if (unsplittableCount > 0 && ppro.Marker && ppro.Marker.MARKER_TYPE_COMMENT) {
         const markersForUnsplit = await ppro.Markers.getMarkers(seq);
+        const COMMENT_TYPE = ppro.Marker.MARKER_TYPE_COMMENT;
         if (markersForUnsplit) {
           project.lockedAccess(() => {
             project.executeTransaction(c => {
               raw.forEach((cut, idx) => {
-                /* Only mark cuts that we couldn't fully ripple-delete */
                 let wasRemoved = false;
                 for (const it of removableItems) {
                   if (cut.start >= it.segStart - 0.01 && cut.end <= it.segEnd + 0.01) {
@@ -1167,10 +1168,10 @@ applyBtn.addEventListener('click', async () => {
                   }
                 }
                 if (!wasRemoved) {
-                  const start    = makeTime(ppro, cut.start);
-                  const duration = makeTime(ppro, Math.max(cut.end - cut.start, 0.04));
+                  const start    = ppro.TickTime.createWithSeconds(cut.start);
+                  const duration = ppro.TickTime.createWithSeconds(Math.max(cut.end - cut.start, 0.04));
                   const label    = `CUT ${idx + 1}/${total} — ${cut.reason || 'filler'}`;
-                  const action   = markersForUnsplit.createAddMarkerAction(label, 'Comment', start, duration, '');
+                  const action   = markersForUnsplit.createAddMarkerAction(label, COMMENT_TYPE, start, duration, '');
                   if (action) c.addAction(action);
                 }
               });
@@ -1181,36 +1182,56 @@ applyBtn.addEventListener('click', async () => {
       setProgress(100);
 
     } catch (cutErr) {
-      /* ── Fallback: marker mode ── */
+      /* ── Fallback: marker mode ──
+       * EXACT pattern from official Adobe sample (markers.ts:60-74):
+       *   - Action created INSIDE the executeTransaction callback
+       *   - Marker type uses ppro.Marker.MARKER_TYPE_COMMENT constant
+       *     (NOT the literal string 'Comment' — that fails with
+       *     "Script action failed to execute")
+       *   - executeTransaction wrapped in lockedAccess
+       */
       realCutErrorMsg = cutErr && cutErr.message ? cutErr.message : String(cutErr);
-      console.warn('[FillerRemover] real-cut failed, falling back to markers:', realCutErrorMsg);
+      console.warn('[FillerRemover] real-cut path skipped:', realCutErrorMsg);
       mode = 'markers';
-      setStatus(`Real-cut unavailable — adding ${total} markers instead…`, 'busy');
+      setStatus(`Adding ${total} cut markers…`, 'busy');
       setProgress(40);
 
       if (!ppro.Markers || typeof ppro.Markers.getMarkers !== 'function')
-        throw new Error(`Both real-cut and marker fallback failed.\nReal-cut: ${cutErr.message}\nMarker: ppro.Markers.getMarkers missing`);
-      const markers = await ppro.Markers.getMarkers(seq);
-      if (!markers) throw new Error(`Real-cut failed AND marker fallback failed (no Markers collection).\nReal-cut: ${cutErr.message}`);
+        throw new Error(`ppro.Markers.getMarkers missing. ppro keys: ${Object.getOwnPropertyNames(ppro).join(', ')}`);
+      if (!ppro.Marker || !ppro.Marker.MARKER_TYPE_COMMENT)
+        throw new Error(`ppro.Marker.MARKER_TYPE_COMMENT missing. ppro.Marker keys: ${ppro.Marker ? Object.getOwnPropertyNames(ppro.Marker).join(', ') : 'undefined'}`);
 
-      /* Pre-build marker actions (avoid script-object-invalid by capturing references first) */
-      const markerActions = raw.map((cut, idx) => {
-        const start    = makeTime(ppro, cut.start);
-        const duration = makeTime(ppro, Math.max(cut.end - cut.start, 0.04));
-        const label    = `CUT ${idx + 1}/${total} — ${cut.reason || 'filler'}`;
-        const comment  = `[${cut.start.toFixed(2)}s → ${cut.end.toFixed(2)}s]` +
-                         (cut.word ? ` "${cut.word}"` : '') +
-                         (cut.text ? ` "${cut.text.slice(0, 60)}"` : '');
-        return markers.createAddMarkerAction(label, 'Comment', start, duration, comment);
-      });
+      const sequenceMarkers = await ppro.Markers.getMarkers(seq);
+      if (!sequenceMarkers) throw new Error('No markers collection returned for sequence.');
 
-      let ok2 = false;
+      const COMMENT_TYPE = ppro.Marker.MARKER_TYPE_COMMENT;
+
+      let markerOk = false, markerErr = '';
       project.lockedAccess(() => {
-        ok2 = project.executeTransaction(compound => {
-          for (const a of markerActions) if (a) compound.addAction(a);
-        }, `Filler Remover — add ${total} cut markers (fallback)`);
+        try {
+          markerOk = project.executeTransaction(compound => {
+            for (let idx = 0; idx < raw.length; idx++) {
+              const cut       = raw[idx];
+              const startT    = ppro.TickTime.createWithSeconds(cut.start);
+              const durationT = ppro.TickTime.createWithSeconds(Math.max(cut.end - cut.start, 0.04));
+              const label     = `CUT ${idx + 1}/${total} — ${cut.reason || 'filler'}`;
+              const comment   = `[${cut.start.toFixed(2)}s → ${cut.end.toFixed(2)}s]` +
+                                (cut.word ? ` "${cut.word}"` : '') +
+                                (cut.text ? ` "${cut.text.slice(0, 60)}"` : '');
+              const action = sequenceMarkers.createAddMarkerAction(
+                label, COMMENT_TYPE, startT, durationT, comment
+              );
+              if (action) compound.addAction(action);
+            }
+          }, `Filler Remover — add ${total} cut markers`);
+        } catch (e) { markerErr = e.message || String(e); }
       });
-      if (!ok2) throw new Error(`Marker fallback transaction refused. Real-cut error: ${cutErr.message}`);
+      if (!markerOk) {
+        throw new Error(
+          `Marker placement failed: ${markerErr || 'transaction refused'}\n` +
+          `(Real-cut was skipped because: ${cutErr.message})`
+        );
+      }
       setProgress(100);
     }
 
@@ -1273,20 +1294,23 @@ applyBtn.addEventListener('click', async () => {
           const proj2 = await ppro2.Project.getActiveProject();
           const m2    = await ppro2.Markers.getMarkers(seq2);
           const list  = m2.getMarkers ? m2.getMarkers() : [];
-          /* Pre-build remove actions (avoid script-object-invalid) */
-          const removeActions = [];
+          /* Identify CUT markers by name. Per Adobe sample (markers.ts:212),
+           * marker.getName() is sync. Some builds expose .name property; try both. */
+          const cutMarkers = [];
           for (const mk of list) {
-            const nm = (mk && mk.name !== undefined) ? mk.name : '';
-            if (typeof nm === 'string' && nm.startsWith('CUT ')) {
-              const a = m2.createRemoveMarkerAction(mk);
-              if (a) removeActions.push(a);
-            }
+            let nm = '';
+            try { nm = (typeof mk.getName === 'function') ? mk.getName() : (mk.name || ''); } catch (_) {}
+            if (typeof nm === 'string' && nm.startsWith('CUT ')) cutMarkers.push(mk);
           }
-          const removed = removeActions.length;
+          const removed = cutMarkers.length;
           let ok = false;
           proj2.lockedAccess(() => {
             ok = proj2.executeTransaction(compound => {
-              for (const a of removeActions) compound.addAction(a);
+              /* Create remove actions INSIDE the transaction callback per Adobe pattern */
+              for (const mk of cutMarkers) {
+                const a = m2.createRemoveMarkerAction(mk);
+                if (a) compound.addAction(a);
+              }
             }, 'Filler Remover — delete cut markers');
           });
           cleanupBtn.textContent = ok
