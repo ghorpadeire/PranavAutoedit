@@ -305,5 +305,81 @@ class TestTempFileCleanup(unittest.TestCase):
         self.assertFalse(os.path.exists(path), "Temp file should be deleted after error")
 
 
+# ---------------------------------------------------------------------------
+# POST /v1/analyze-raw  (UXP plugin endpoint — raw JSON body)
+# ---------------------------------------------------------------------------
+
+def _upload_raw(content: bytes = VALID_TRANSCRIPT, headers: dict = None) -> object:
+    """POST /v1/analyze-raw with a raw JSON body."""
+    hdrs = headers if headers is not None else GOOD_HEADERS
+    return CLIENT.post(
+        '/v1/analyze-raw',
+        content=content,
+        headers={**hdrs, 'Content-Type': 'application/json'},
+    )
+
+
+class TestAnalyzeRaw(unittest.TestCase):
+    """Mirrors TestAnalyzeHappyPath + TestFileValidation for the raw endpoint."""
+
+    def setUp(self):
+        _reset_rate_limiter()
+
+    def test_returns_200_with_valid_body(self):
+        with patch('api.pipeline.run', return_value=FAKE_RESULT):
+            r = _upload_raw()
+        self.assertEqual(r.status_code, 200)
+
+    def test_response_contains_final(self):
+        with patch('api.pipeline.run', return_value=FAKE_RESULT):
+            r = _upload_raw()
+        self.assertIn('final', r.json())
+
+    def test_response_contains_elapsed(self):
+        with patch('api.pipeline.run', return_value=FAKE_RESULT):
+            r = _upload_raw()
+        self.assertIn('elapsed', r.json())
+
+    def test_invalid_json_returns_422(self):
+        r = _upload_raw(content=b'not json at all')
+        self.assertEqual(r.status_code, 422)
+
+    def test_missing_segments_returns_422(self):
+        bad = json.dumps({'language': 'en-us'}).encode()
+        r = _upload_raw(content=bad)
+        self.assertEqual(r.status_code, 422)
+
+    def test_wrong_api_key_returns_401(self):
+        r = _upload_raw(headers={'X-API-Key': 'wrong', 'X-Claude-Key': 'sk-ant-x'})
+        self.assertEqual(r.status_code, 401)
+
+    def test_missing_claude_key_returns_422(self):
+        r = CLIENT.post(
+            '/v1/analyze-raw',
+            content=VALID_TRANSCRIPT,
+            headers={'X-API-Key': 'testkey', 'Content-Type': 'application/json'},
+        )
+        self.assertEqual(r.status_code, 422)
+
+    def test_claude_key_forwarded_to_pipeline(self):
+        with patch('api.pipeline.run', return_value=FAKE_RESULT) as mock_run:
+            _upload_raw(headers={
+                'X-API-Key':    'testkey',
+                'X-Claude-Key': 'sk-ant-rawkey',
+            })
+        _, kwargs = mock_run.call_args
+        self.assertEqual(kwargs['claude_api_key'], 'sk-ant-rawkey')
+
+    def test_value_error_returns_502(self):
+        with patch('api.pipeline.run', side_effect=ValueError('bad')):
+            r = _upload_raw()
+        self.assertEqual(r.status_code, 502)
+
+    def test_generic_error_returns_500(self):
+        with patch('api.pipeline.run', side_effect=RuntimeError('boom')):
+            r = _upload_raw()
+        self.assertEqual(r.status_code, 500)
+
+
 if __name__ == '__main__':
     unittest.main()
