@@ -194,34 +194,56 @@
     .sel-count { margin-left: auto; }
 
     /* Cut items */
-    #cutsList { display: flex; flex-direction: column; gap: 2px; }
+    #cutsList { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; }
 
     .cut-item {
-      display: flex; align-items: flex-start; gap: 7px;
+      display: flex; align-items: flex-start; gap: 9px;
       background: var(--raised); border-left: 3px solid var(--accent);
-      border-radius: 0 var(--r) var(--r) 0; padding: 5px 8px;
+      border-radius: 0 var(--r) var(--r) 0; padding: 7px 10px;
+      transition: background 0.15s;
     }
-    .cut-item.review { border-left-color: var(--warn); opacity: 0.9; }
+    .cut-item:hover { background: #353535; }
+    .cut-item.review { border-left-color: var(--warn); opacity: 0.92; }
     .cut-item.hidden { display: none !important; }
 
     .cut-check {
-      margin-top: 2px; cursor: pointer;
+      margin-top: 3px; cursor: pointer;
       accent-color: var(--accent);
-      width: 13px; height: 13px; flex-shrink: 0;
+      width: 14px; height: 14px; flex-shrink: 0;
     }
     .cut-item.review .cut-check { accent-color: var(--warn); }
 
-    .cut-body  { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-    .cut-hdr   { display: flex; align-items: center; gap: 5px; }
-    .cut-ts    { font-size: 11px; font-weight: 600; color: var(--text); flex: 1; }
+    .cut-body  { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .cut-hdr   { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .cut-icon  { font-size: 13px; line-height: 1; flex-shrink: 0; }
+    .cut-ts    {
+      font-family: 'Consolas', 'Menlo', monospace;
+      font-size: 12px; font-weight: 700; color: var(--text);
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .cut-arrow { color: var(--dim); font-size: 11px; flex-shrink: 0; }
+    .cut-dur   {
+      font-size: 10px; color: var(--dim); flex-shrink: 0;
+      background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 3px;
+    }
+    .cut-spacer { flex: 1; }
     .pill      {
-      font-size: 9px; padding: 1px 5px; border-radius: 10px;
+      font-size: 9px; padding: 2px 6px; border-radius: 10px;
       font-weight: 700; letter-spacing: 0.04em; flex-shrink: 0;
     }
     .p-remove  { background: rgba(91,141,238,0.18); color: var(--accent); }
     .p-review  { background: rgba(240,173,78,0.18);  color: var(--warn);  }
-    .cut-conf  { font-size: 10px; color: var(--dim); flex-shrink: 0; }
-    .cut-detail { font-size: 10px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .cut-conf  { font-size: 10px; color: var(--dim); flex-shrink: 0; font-weight: 600; }
+    .cut-detail {
+      font-size: 11px; color: #b0b0b0; line-height: 1.4;
+      word-break: break-word;
+    }
+    .cut-quote {
+      font-style: italic; color: var(--text);
+      background: rgba(91,141,238,0.08);
+      padding: 1px 5px; border-radius: 3px;
+      display: inline-block; margin-right: 4px;
+    }
 
     /* ── ZONE 3 specifics ───────────────────────── */
 
@@ -284,7 +306,7 @@
 <!-- ═══════════════════════════════════════════ -->
 <div class="hdr">
   <div style="flex:1">
-    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.4</span></div>
+    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.5</span></div>
     <div class="hdr-status">
       <div class="status-dot" id="statusDot"></div>
       <span id="statusText">Ready — load a transcript to start</span>
@@ -755,9 +777,40 @@ function renderResults(r) {
   if (!allCuts.length) {
     cutsListEl.innerHTML = '<div style="font-size:11px;color:var(--dim);padding:6px 0">No cuts found — transcript is clean 🎉</div>';
   } else {
+    /* Icon + readable label per cut category */
+    const iconFor = r => ({
+      disfluency:  '⏸',
+      text_filler: '🗣',
+      long_gap:    '🔇',
+      false_start: '🔁',
+    }[r] || '✂');
+    const labelFor = r => ({
+      disfluency:  'Disfluency',
+      text_filler: 'Filler word',
+      long_gap:    'Long pause',
+      false_start: 'False start',
+    }[r] || (r ? r.replace(/_/g, ' ') : 'Cut'));
+    const escapeHtml = s => String(s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+
     allCuts.forEach((cut, i) => {
-      const isRev  = cut._v === 'review';
-      const reason = cut.ai_reason || cut.reason || '';
+      const isRev    = cut._v === 'review';
+      const aiReason = (cut.ai_reason || '').trim();
+      const baseLabel = labelFor(cut.reason);
+      const dur      = Math.max(0, cut.end - cut.start);
+
+      /* Build human-readable detail line */
+      let detail = '';
+      if (cut.word) {
+        detail += `<span class="cut-quote">"${escapeHtml(cut.word)}"</span>`;
+      } else if (cut.text) {
+        const t = cut.text.length > 70 ? cut.text.slice(0, 67) + '…' : cut.text;
+        detail += `<span class="cut-quote">"${escapeHtml(t)}"</span>`;
+      } else if (cut.gap_seconds) {
+        detail += `<span class="cut-quote">${cut.gap_seconds}s of silence</span>`;
+      }
+      detail += `<span style="color:var(--dim)">${escapeHtml(baseLabel)}</span>`;
+      if (aiReason) detail += `<span style="color:var(--dim)"> — ${escapeHtml(aiReason)}</span>`;
+
       const div    = document.createElement('div');
       div.className    = 'cut-item' + (isRev ? ' review' : '');
       div.dataset.idx  = i;
@@ -765,11 +818,16 @@ function renderResults(r) {
         <input type="checkbox" class="cut-check" data-idx="${i}" ${!isRev ? 'checked' : ''}>
         <div class="cut-body">
           <div class="cut-hdr">
-            <span class="cut-ts">${fmt(cut.start)} → ${fmt(cut.end)}</span>
+            <span class="cut-icon" title="${escapeHtml(baseLabel)}">${iconFor(cut.reason)}</span>
+            <span class="cut-ts">${fmt(cut.start)}</span>
+            <span class="cut-arrow">→</span>
+            <span class="cut-ts">${fmt(cut.end)}</span>
+            <span class="cut-dur">${dur.toFixed(2)}s</span>
+            <span class="cut-spacer"></span>
             <span class="pill ${isRev ? 'p-review' : 'p-remove'}">${isRev ? 'REVIEW' : 'REMOVE'}</span>
             <span class="cut-conf">${conf(cut.reason)}%</span>
           </div>
-          <div class="cut-detail">${reason}</div>
+          <div class="cut-detail">${detail}</div>
         </div>`;
       cutsListEl.appendChild(div);
     });
@@ -1075,31 +1133,41 @@ applyBtn.addEventListener('click', async () => {
       const MEDIA_ANY = (ppro.Constants && ppro.Constants.MediaType && ppro.Constants.MediaType.ANY) || 0;
       setProgress(70);
 
-      /* 5. ONE transaction: remove everything, then re-insert each keep at its
-       *    rippled position with source in/out reset for that segment.  Actions
-       *    inside a CompoundAction execute in addition order. */
-      const ok = project.executeTransaction(compound => {
-        const removeAct = editor.createRemoveItemsAction(selection, false, MEDIA_ANY, false);
-        if (removeAct) compound.addAction(removeAct);
+      /* 5. Build all action objects FIRST (Adobe forum-confirmed pattern).
+       *    Action creation must happen BEFORE entering the locked transaction
+       *    so references stay valid; "script object is no longer valid" fires
+       *    when actions are built inside async callbacks. */
+      const removeAct = editor.createRemoveItemsAction(selection, false, MEDIA_ANY, false);
+      const keepActions = [];   // [{ setIO, ow }, ...]
+      for (const k of keeps) {
+        const inT    = ppro.TickTime.createWithSeconds(k.mediaIn);
+        const outT   = ppro.TickTime.createWithSeconds(k.mediaOut);
+        const startT = ppro.TickTime.createWithSeconds(k.newStart);
+        const setIO  = (k.projectItem && typeof k.projectItem.createSetInOutPointsAction === 'function')
+                      ? k.projectItem.createSetInOutPointsAction(inT, outT) : null;
+        const ow     = editor.createOverwriteItemAction(
+          k.projectItem, startT,
+          k.mediaType === 'video' ? k.trackIdx : -1,
+          k.mediaType === 'audio' ? k.trackIdx : -1,
+        );
+        keepActions.push({ setIO, ow });
+      }
 
-        for (const k of keeps) {
-          const inT  = ppro.TickTime.createWithSeconds(k.mediaIn);
-          const outT = ppro.TickTime.createWithSeconds(k.mediaOut);
-          if (k.projectItem && typeof k.projectItem.createSetInOutPointsAction === 'function') {
-            const setIO = k.projectItem.createSetInOutPointsAction(inT, outT);
+      /* 6. Wrap executeTransaction in lockedAccess — REQUIRED in Premiere 25+
+       *    or scripts fail with "the script object is no longer valid".
+       *    Confirmed pattern from Adobe forum + sample plugin. */
+      let ok = false;
+      project.lockedAccess(() => {
+        ok = project.executeTransaction(compound => {
+          if (removeAct) compound.addAction(removeAct);
+          for (const { setIO, ow } of keepActions) {
             if (setIO) compound.addAction(setIO);
+            if (ow)    compound.addAction(ow);
           }
-          const startT = ppro.TickTime.createWithSeconds(k.newStart);
-          const ow = editor.createOverwriteItemAction(
-            k.projectItem, startT,
-            k.mediaType === 'video' ? k.trackIdx : -1,
-            k.mediaType === 'audio' ? k.trackIdx : -1,
-          );
-          if (ow) compound.addAction(ow);
-        }
-      }, `Filler Remover — remove ${cutRanges.length} ranges (${total} cuts)`);
+        }, `Filler Remover — remove ${cutRanges.length} ranges (${total} cuts)`);
+      });
 
-      if (!ok) throw new Error('Premiere refused the transaction (sequence may be read-only).');
+      if (!ok) throw new Error('Premiere refused the transaction (sequence may be read-only or referenced clip is offline).');
       setProgress(100);
 
     } catch (cutErr) {
@@ -1115,18 +1183,23 @@ applyBtn.addEventListener('click', async () => {
       const markers = await ppro.Markers.getMarkers(seq);
       if (!markers) throw new Error(`Real-cut failed AND marker fallback failed (no Markers collection).\nReal-cut: ${cutErr.message}`);
 
-      const ok2 = project.executeTransaction(compound => {
-        raw.forEach((cut, idx) => {
-          const start    = makeTime(ppro, cut.start);
-          const duration = makeTime(ppro, Math.max(cut.end - cut.start, 0.04));
-          const label    = `CUT ${idx + 1}/${total} — ${cut.reason || 'filler'}`;
-          const comment  = `[${cut.start.toFixed(2)}s → ${cut.end.toFixed(2)}s]` +
-                           (cut.word ? ` "${cut.word}"` : '') +
-                           (cut.text ? ` "${cut.text.slice(0, 60)}"` : '');
-          const action = markers.createAddMarkerAction(label, 'Comment', start, duration, comment);
-          if (action) compound.addAction(action);
-        });
-      }, `Filler Remover — add ${total} cut markers (fallback)`);
+      /* Pre-build marker actions (avoid script-object-invalid by capturing references first) */
+      const markerActions = raw.map((cut, idx) => {
+        const start    = makeTime(ppro, cut.start);
+        const duration = makeTime(ppro, Math.max(cut.end - cut.start, 0.04));
+        const label    = `CUT ${idx + 1}/${total} — ${cut.reason || 'filler'}`;
+        const comment  = `[${cut.start.toFixed(2)}s → ${cut.end.toFixed(2)}s]` +
+                         (cut.word ? ` "${cut.word}"` : '') +
+                         (cut.text ? ` "${cut.text.slice(0, 60)}"` : '');
+        return markers.createAddMarkerAction(label, 'Comment', start, duration, comment);
+      });
+
+      let ok2 = false;
+      project.lockedAccess(() => {
+        ok2 = project.executeTransaction(compound => {
+          for (const a of markerActions) if (a) compound.addAction(a);
+        }, `Filler Remover — add ${total} cut markers (fallback)`);
+      });
       if (!ok2) throw new Error(`Marker fallback transaction refused. Real-cut error: ${cutErr.message}`);
       setProgress(100);
     }
@@ -1186,18 +1259,22 @@ applyBtn.addEventListener('click', async () => {
           const proj2 = await ppro2.Project.getActiveProject();
           const m2    = await ppro2.Markers.getMarkers(seq2);
           const list  = m2.getMarkers ? m2.getMarkers() : [];
-          let removed = 0;
-          const ok = proj2.executeTransaction(compound => {
-            for (const mk of list) {
-              const name = (mk && typeof mk.getName === 'function')
-                ? '' : (mk.name || ''); /* prefer prop, fall back to method below */
-              const nm = (mk.name !== undefined ? mk.name : '');
-              if (typeof nm === 'string' && nm.startsWith('CUT ')) {
-                const a = m2.createRemoveMarkerAction(mk);
-                if (a) { compound.addAction(a); removed++; }
-              }
+          /* Pre-build remove actions (avoid script-object-invalid) */
+          const removeActions = [];
+          for (const mk of list) {
+            const nm = (mk && mk.name !== undefined) ? mk.name : '';
+            if (typeof nm === 'string' && nm.startsWith('CUT ')) {
+              const a = m2.createRemoveMarkerAction(mk);
+              if (a) removeActions.push(a);
             }
-          }, 'Filler Remover — delete cut markers');
+          }
+          const removed = removeActions.length;
+          let ok = false;
+          proj2.lockedAccess(() => {
+            ok = proj2.executeTransaction(compound => {
+              for (const a of removeActions) compound.addAction(a);
+            }, 'Filler Remover — delete cut markers');
+          });
           cleanupBtn.textContent = ok
             ? `✓ Removed ${removed} marker${removed !== 1 ? 's' : ''} (Ctrl+Z to restore)`
             : '✗ Cleanup transaction refused';
