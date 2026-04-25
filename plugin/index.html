@@ -870,6 +870,75 @@ copyAllBtn.addEventListener('click', () => {
 });
 
 /* ── Apply Cuts ──────────────────────────────── */
+
+/*
+ * Premiere Pro UXP API changed across versions.  This function resolves
+ * the active sequence regardless of API version:
+ *
+ *  v22–25:  ppro.app.getActiveSequence()
+ *  v26+:    ppro.app.getActiveProject() → project.getActiveSequence()
+ *            OR ppro.sequence (flat module)
+ *
+ * We try all known patterns and surface a clear diagnostic if none work.
+ */
+async function resolveActiveSequence(ppro) {
+  /* --- Pattern 1: ppro.app.getActiveSequence() (v22–25) --- */
+  if (ppro.app && typeof ppro.app.getActiveSequence === 'function') {
+    const seq = await ppro.app.getActiveSequence();
+    if (seq) return seq;
+  }
+
+  /* --- Pattern 2: ppro.app.getActiveProject() → project.getActiveSequence() (v26+) --- */
+  if (ppro.app && typeof ppro.app.getActiveProject === 'function') {
+    const proj = await ppro.app.getActiveProject();
+    if (proj && typeof proj.getActiveSequence === 'function') {
+      const seq = await proj.getActiveSequence();
+      if (seq) return seq;
+    }
+  }
+
+  /* --- Pattern 3: ppro is the Application directly --- */
+  if (typeof ppro.getActiveSequence === 'function') {
+    const seq = await ppro.getActiveSequence();
+    if (seq) return seq;
+  }
+  if (typeof ppro.getActiveProject === 'function') {
+    const proj = await ppro.getActiveProject();
+    if (proj && typeof proj.getActiveSequence === 'function') {
+      const seq = await proj.getActiveSequence();
+      if (seq) return seq;
+    }
+  }
+
+  /* --- Diagnostic: show what the module actually exposes --- */
+  const topKeys  = Object.getOwnPropertyNames(ppro).join(', ') || '(none)';
+  const appKeys  = ppro.app ? Object.getOwnPropertyNames(ppro.app).join(', ') : 'ppro.app is undefined';
+  throw new Error(
+    `Cannot find active sequence.\n` +
+    `ppro keys: ${topKeys}\n` +
+    `ppro.app keys: ${appKeys}\n` +
+    `Open a sequence in the Premiere timeline, then try again.`
+  );
+}
+
+/*
+ * Create a Premiere Time object from seconds — handles API variations.
+ */
+function makeTime(ppro, seconds) {
+  if (ppro.Time) {
+    /* Pattern A: new ppro.Time() with .seconds setter */
+    try { const t = new ppro.Time(); t.seconds = seconds; return t; } catch {}
+    /* Pattern B: ppro.Time.fromSeconds() factory */
+    if (typeof ppro.Time.fromSeconds === 'function')
+      return ppro.Time.fromSeconds(seconds);
+  }
+  /* Pattern C: Time is a property of ppro.app */
+  if (ppro.app && ppro.app.Time) {
+    const t = new ppro.app.Time(); t.seconds = seconds; return t;
+  }
+  throw new Error(`Cannot create Time object — ppro.Time is ${typeof ppro.Time}`);
+}
+
 applyBtn.addEventListener('click', async () => {
   if (!selectedIdx.size) return;
 
@@ -889,8 +958,7 @@ applyBtn.addEventListener('click', async () => {
   setStatus('Connecting to Premiere…', 'busy');
 
   try {
-    const seq = await ppro.app.getActiveSequence();
-    if (!seq) throw new Error('No active sequence — open a sequence in the Timeline');
+    const seq = await resolveActiveSequence(ppro);
 
     /* Collect selected cuts and process end→start to preserve timestamps */
     const cutsToApply = [...selectedIdx]
@@ -905,8 +973,8 @@ applyBtn.addEventListener('click', async () => {
       setStatus(`Cutting ${i + 1} of ${total}…`, 'busy');
       setProgress(10 + 88 * ((i + 1) / total));
 
-      const tStart = new ppro.Time(); tStart.seconds = cut.start;
-      const tEnd   = new ppro.Time(); tEnd.seconds   = cut.end;
+      const tStart = makeTime(ppro, cut.start);
+      const tEnd   = makeTime(ppro, cut.end);
 
       seq.razor(tEnd);
       seq.razor(tStart);
@@ -934,8 +1002,11 @@ applyBtn.addEventListener('click', async () => {
     setProgress(0);
     setStatus('Apply failed', 'err');
     applyStatus.innerHTML = '';
-    applyStatus.appendChild(badge('✗ ' + err.message, 'err'));
+    /* Show first line of error prominently; full detail in console */
+    const firstLine = err.message.split('\n')[0];
+    applyStatus.appendChild(badge('✗ ' + firstLine, 'err'));
     applyStatus.style.display = '';
+    console.error('[FillerRemover] Apply error:', err.message);
     backupConfirm.checked = false;
     updateApplyBtn();
   }
