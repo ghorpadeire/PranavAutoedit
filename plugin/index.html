@@ -306,7 +306,7 @@
 <!-- ═══════════════════════════════════════════ -->
 <div class="hdr">
   <div style="flex:1">
-    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.5</span></div>
+    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.6</span></div>
     <div class="hdr-status">
       <div class="status-dot" id="statusDot"></div>
       <span id="statusText">Ready — load a transcript to start</span>
@@ -1119,55 +1119,88 @@ applyBtn.addEventListener('click', async () => {
         }
         k.newStart = k.oldStart - shift;
       }
-      keeps.sort((a, b) => a.newStart - b.newStart);
+
+      /* 3b. DEDUPE keep segments. The source media has both V and A channels,
+       *     so V1 + A1 + A2 + A3 from the same source produce 4 identical keep
+       *     segments per cut-interval. We only need ONE overwrite per
+       *     (projectItem, oldStart, oldEnd) — Premiere routes A/V channels
+       *     automatically when overwriting from the source projectItem. */
+      const dedupeKey = k => `${k.projectItem && k.projectItem.getId ? k.projectItem.getId() : '?'}|${k.oldStart.toFixed(4)}|${k.mediaIn.toFixed(4)}|${(k.mediaIn + k.dur).toFixed(4)}`;
+      const seenKeeps = new Map();
+      for (const k of keeps) {
+        const key = dedupeKey(k);
+        if (!seenKeeps.has(key)) seenKeeps.set(key, k);
+      }
+      const uniqueKeeps = [...seenKeeps.values()].sort((a, b) => a.newStart - b.newStart);
       setProgress(55);
 
-      /* 4. Build a TrackItemSelection containing every original item */
+      const editor = ppro.SequenceEditor.getEditor(seq);
+      if (!editor) throw new Error('SequenceEditor.getEditor returned null.');
+      const MEDIA_ANY = (ppro.Constants && ppro.Constants.MediaType && ppro.Constants.MediaType.ANY) || 0;
+
+      /* 4. PHASE 1 — Remove every original item in ONE locked transaction.
+       *    Build the selection + remove action up front, then execute. */
       let selection;
       ppro.TrackItemSelection.createEmptySelection(s => { selection = s; });
       if (!selection) throw new Error('createEmptySelection returned no selection.');
       for (const it of allItems) selection.addItem(it.item);
 
-      const editor = ppro.SequenceEditor.getEditor(seq);
-      if (!editor) throw new Error('SequenceEditor.getEditor returned null.');
-      const MEDIA_ANY = (ppro.Constants && ppro.Constants.MediaType && ppro.Constants.MediaType.ANY) || 0;
-      setProgress(70);
-
-      /* 5. Build all action objects FIRST (Adobe forum-confirmed pattern).
-       *    Action creation must happen BEFORE entering the locked transaction
-       *    so references stay valid; "script object is no longer valid" fires
-       *    when actions are built inside async callbacks. */
       const removeAct = editor.createRemoveItemsAction(selection, false, MEDIA_ANY, false);
-      const keepActions = [];   // [{ setIO, ow }, ...]
-      for (const k of keeps) {
-        const inT    = ppro.TickTime.createWithSeconds(k.mediaIn);
-        const outT   = ppro.TickTime.createWithSeconds(k.mediaOut);
-        const startT = ppro.TickTime.createWithSeconds(k.newStart);
-        const setIO  = (k.projectItem && typeof k.projectItem.createSetInOutPointsAction === 'function')
-                      ? k.projectItem.createSetInOutPointsAction(inT, outT) : null;
-        const ow     = editor.createOverwriteItemAction(
-          k.projectItem, startT,
-          k.mediaType === 'video' ? k.trackIdx : -1,
-          k.mediaType === 'audio' ? k.trackIdx : -1,
-        );
-        keepActions.push({ setIO, ow });
+      if (!removeAct) throw new Error('createRemoveItemsAction returned null.');
+
+      let removeOk = false;
+      project.lockedAccess(() => {
+        removeOk = project.executeTransaction(compound => {
+          compound.addAction(removeAct);
+        }, `Filler Remover — clear timeline`);
+      });
+      if (!removeOk) throw new Error('Phase 1 (remove all items) refused by Premiere.');
+      setProgress(65);
+
+      /* 5. PHASE 2 — Insert each keep segment in its OWN transaction.
+       *    Per-segment isolation means: (a) if one fails, others still
+       *    succeed; (b) the source's in/out is set immediately before its
+       *    overwrite, so values can't be stomped by later actions in the
+       *    same transaction. Track indices fixed at 0/0; Premiere auto-
+       *    routes A/V channels from the source projectItem. */
+      let inserted = 0, failures = [];
+      for (let i = 0; i < uniqueKeeps.length; i++) {
+        const k = uniqueKeeps[i];
+        try {
+          const inT    = ppro.TickTime.createWithSeconds(k.mediaIn);
+          const outT   = ppro.TickTime.createWithSeconds(k.mediaIn + k.dur);
+          const startT = ppro.TickTime.createWithSeconds(k.newStart);
+
+          const setIO = (k.projectItem && typeof k.projectItem.createSetInOutPointsAction === 'function')
+                       ? k.projectItem.createSetInOutPointsAction(inT, outT) : null;
+          const ow    = editor.createOverwriteItemAction(k.projectItem, startT, 0, 0);
+          if (!ow) throw new Error('createOverwriteItemAction returned null');
+
+          let segOk = false;
+          project.lockedAccess(() => {
+            segOk = project.executeTransaction(compound => {
+              if (setIO) compound.addAction(setIO);
+              compound.addAction(ow);
+            }, `Filler Remover — keep segment ${i + 1}/${uniqueKeeps.length}`);
+          });
+          if (segOk) inserted++;
+          else       failures.push(`#${i + 1} @ ${k.newStart.toFixed(2)}s: transaction refused`);
+        } catch (segErr) {
+          failures.push(`#${i + 1} @ ${k.newStart.toFixed(2)}s: ${segErr.message}`);
+        }
+        setProgress(65 + 33 * ((i + 1) / uniqueKeeps.length));
       }
 
-      /* 6. Wrap executeTransaction in lockedAccess — REQUIRED in Premiere 25+
-       *    or scripts fail with "the script object is no longer valid".
-       *    Confirmed pattern from Adobe forum + sample plugin. */
-      let ok = false;
-      project.lockedAccess(() => {
-        ok = project.executeTransaction(compound => {
-          if (removeAct) compound.addAction(removeAct);
-          for (const { setIO, ow } of keepActions) {
-            if (setIO) compound.addAction(setIO);
-            if (ow)    compound.addAction(ow);
-          }
-        }, `Filler Remover — remove ${cutRanges.length} ranges (${total} cuts)`);
-      });
-
-      if (!ok) throw new Error('Premiere refused the transaction (sequence may be read-only or referenced clip is offline).');
+      if (inserted === 0) {
+        throw new Error(
+          `Phase 2 inserted 0/${uniqueKeeps.length} segments.\n` +
+          `Errors:\n${failures.slice(0, 5).join('\n')}` +
+          (failures.length > 5 ? `\n…and ${failures.length - 5} more` : '')
+        );
+      }
+      if (failures.length) {
+        console.warn(`[FillerRemover] partial success: ${inserted}/${uniqueKeeps.length} kept`, failures);
+      }
       setProgress(100);
 
     } catch (cutErr) {
