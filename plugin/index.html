@@ -547,52 +547,47 @@ saveKeyBtn.addEventListener('click', async () => {
 });
 apiKeyEl.addEventListener('input', () => { keyStatus.innerHTML = ''; refreshReady(); });
 
-/* ── File reading ────────────────────────────── */
-async function readFileByPath(filePath) {
-  const url = 'file:///' + filePath.replace(/\\/g, '/').replace(/^\//, '');
-  /* Method 1: UXP localFileSystem */
-  try {
-    const entry = await lfs.getEntryForUrl(url);
-    const fmts  = uxp.storage.formats;
-    const opts  = (fmts && fmts.utf8) ? { format: fmts.utf8 } : {};
-    return await entry.read(opts);
-  } catch (e1) {
-    /* Method 2: fetch file:// URL */
-    try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.text();
-    } catch (e2) {
-      throw new Error(`Cannot read file (${e1.message.split(':')[0]} / ${e2.message.split(':')[0]})`);
-    }
-  }
-}
-
+/* ── File loading via backend proxy ─────────── */
+/*
+ * Premiere Pro 2026 UXP blocks all direct file access:
+ *   lfs.getEntryForUrl → not a function
+ *   fetch('file://')   → network request failed (sandboxed)
+ *
+ * Workaround: delegate file reading to the local backend via the new
+ * POST /v1/read-transcript endpoint.  The backend (same machine) can
+ * open the file normally and return its contents.
+ */
 loadBtn.addEventListener('click', async () => {
-  const pathVal = (transcriptPath.value || '').trim();
-  if (!pathVal) { setEl(fileStatus, '✗ Paste a file path first', 'err'); return; }
+  const pathVal    = (transcriptPath.value || '').trim();
+  const backendUrl = (backendUrlEl.value  || '').trim().replace(/\/+$/, '');
+  const productKey = (productKeyEl.value  || '').trim();
+
+  if (!pathVal) { setEl(fileStatus, '✗ Paste the full file path first', 'err'); return; }
 
   loadBtn.disabled = true;
-  setEl(fileStatus, '⏳ Reading…', 'info');
+  setEl(fileStatus, '⏳ Reading via backend…', 'info');
 
   try {
-    const content = await readFileByPath(pathVal);
+    const res = await fetch(`${backendUrl}/v1/read-transcript`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': productKey },
+      body:    JSON.stringify({ path: pathVal }),
+    });
 
-    let parsed;
-    try { parsed = JSON.parse(content); }
-    catch {
-      setEl(fileStatus, '✗ Not valid JSON — re-export from Premiere', 'err');
-      transcriptText = null; refreshReady(); return;
-    }
-    if (!parsed.segments) {
-      setEl(fileStatus, '✗ Missing "segments" key — wrong file?', 'err');
-      transcriptText = null; refreshReady(); return;
+    if (res.status === 401) throw new Error('Invalid product key — check Settings');
+    if (res.status === 404) throw new Error('File not found — double-check the path');
+    if (res.status === 403) throw new Error('Permission denied — check file permissions');
+    if (!res.ok) {
+      let detail = `Backend error ${res.status}`;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(detail);
     }
 
-    transcriptText = content;
+    const data     = await res.json();
+    transcriptText = data.content;
+
     const name = pathVal.split(/[\\/]/).pop();
-    const words = parsed.segments.reduce((n, s) => n + (s.words || []).length, 0);
-    setEl(fileStatus, `✓ ${name}  (${words} words)`, 'ok');
+    setEl(fileStatus, `✓ ${name}  (${data.word_count} words)`, 'ok');
     await secureSet('TRANSCRIPT_PATH', pathVal);
 
     /* Reset results view */
@@ -605,7 +600,11 @@ loadBtn.addEventListener('click', async () => {
     refreshReady();
 
   } catch (err) {
-    setEl(fileStatus, '✗ ' + err.message, 'err');
+    const isNetErr = err.message.toLowerCase().includes('failed to fetch')
+                  || err.message.toLowerCase().includes('network');
+    setEl(fileStatus,
+      '✗ ' + (isNetErr ? 'Cannot reach backend — is uvicorn running?' : err.message),
+      'err');
     transcriptText = null; refreshReady();
   } finally {
     loadBtn.disabled = false;

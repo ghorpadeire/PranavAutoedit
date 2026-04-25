@@ -99,6 +99,77 @@ def health() -> dict:
     }
 
 
+@app.post('/v1/read-transcript', tags=['Utility'])
+async def read_transcript(
+    request: Request,
+    _key: str = Depends(require_api_key),
+) -> dict:
+    """
+    Read a transcript JSON file from the **local** filesystem by path.
+
+    Intended for the Premiere Pro UXP plugin running on the same machine as the
+    local backend.  The UXP sandbox blocks direct file access (no working
+    localFileSystem API in Premiere Pro 2026), so the plugin delegates file I/O
+    to this endpoint.
+
+    **Not suitable for cloud deployments** — the backend cannot reach the
+    client's filesystem over the internet.
+
+    Body: ``{"path": "F:\\\\Project\\\\transcript.json"}``
+
+    Returns::
+
+        {
+          "content":   "<raw JSON string>",   # pass directly to /v1/analyze-raw
+          "word_count": 699,
+          "segments":   12
+        }
+
+    Security constraints (enforced server-side):
+    - Path must end with ``.json``
+    - Path must not contain ``..`` (no directory traversal)
+    - Requires valid ``X-API-Key`` header
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be JSON")
+
+    path: str = (body.get('path') or '').strip()
+    if not path:
+        raise HTTPException(status_code=422, detail="Missing 'path' in request body")
+    if '..' in path:
+        raise HTTPException(status_code=422, detail="Path must not contain '..'")
+    if not path.lower().endswith('.json'):
+        raise HTTPException(status_code=422, detail="Path must end with .json")
+
+    try:
+        with open(path, encoding='utf-8') as fh:
+            content = fh.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail=f"Permission denied: {path}")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot read file: {exc}")
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="File is not valid JSON")
+
+    if 'segments' not in data:
+        raise HTTPException(status_code=422, detail="JSON missing required key 'segments'")
+
+    word_count = sum(len(seg.get('words', [])) for seg in data['segments'])
+    log.info(f"read_transcript path={path!r} words={word_count}")
+    return {
+        'content':    content,
+        'word_count': word_count,
+        'segments':   len(data['segments']),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Shared validation + pipeline execution
 # (used by both /v1/analyze and /v1/analyze-raw)
