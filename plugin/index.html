@@ -284,7 +284,7 @@
 <!-- ═══════════════════════════════════════════ -->
 <div class="hdr">
   <div style="flex:1">
-    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.2</span></div>
+    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.3</span></div>
     <div class="hdr-status">
       <div class="status-dot" id="statusDot"></div>
       <span id="statusText">Ready — load a transcript to start</span>
@@ -978,61 +978,182 @@ applyBtn.addEventListener('click', async () => {
     const seq = await resolveActiveSequence(ppro);
     const project = await ppro.Project.getActiveProject();
 
-    /* Selected cuts, sorted ascending by start time for marker numbering */
-    const cutsToApply = [...selectedIdx]
-      .map(i => allCuts[i]).filter(Boolean)
-      .sort((a, b) => a.start - b.start);
-
-    const total = cutsToApply.length;
+    /* Selected cuts, sorted ascending and merged so overlapping ranges collapse */
+    const raw = [...selectedIdx].map(i => allCuts[i]).filter(Boolean)
+                .sort((a, b) => a.start - b.start);
+    const cutRanges = [];
+    for (const c of raw) {
+      const last = cutRanges[cutRanges.length - 1];
+      if (last && c.start <= last.end + 0.001) {
+        last.end = Math.max(last.end, c.end);
+      } else {
+        cutRanges.push({ start: c.start, end: c.end });
+      }
+    }
+    const total = raw.length;
     if (!total) throw new Error('No cuts selected.');
 
-    setStatus(`Adding ${total} cut markers…`, 'busy');
-    setProgress(30);
+    /* ── Try REAL CUTS via remove + overwrite (Premiere 25+ canonical workaround
+     *    for the missing razor API).  If anything goes wrong, we fall back to
+     *    marker-mode so the user is never left with a broken timeline. ── */
+    let mode = 'cuts';
+    try {
+      setStatus(`Cutting timeline (${cutRanges.length} ranges)…`, 'busy');
+      setProgress(20);
 
-    /* Get the Markers collection for this sequence */
-    if (!ppro.Markers || typeof ppro.Markers.getMarkers !== 'function') {
-      throw new Error(
-        `Premiere API mismatch — ppro.Markers.getMarkers not found.\n` +
-        `ppro keys: ${Object.getOwnPropertyNames(ppro).join(', ')}`
-      );
+      /* 1. Collect every CLIP track item across all V/A tracks */
+      const vCount = await seq.getVideoTrackCount();
+      const aCount = await seq.getAudioTrackCount();
+      const allItems = [];   // {item, trackIdx, mediaType, segStart, segEnd, mediaIn, projectItem}
+
+      const collect = async (track, trackIdx, mediaType) => {
+        if (!track || typeof track.getTrackItems !== 'function') return;
+        const items = track.getTrackItems(1, false); // CLIP=1, includeEmpty=false
+        for (const item of items) {
+          const segStart = (await item.getStartTime()).seconds;
+          const segEnd   = (await item.getEndTime()).seconds;
+          const mediaIn  = (await item.getInPoint()).seconds;
+          const projectItem = await item.getProjectItem();
+          allItems.push({ item, trackIdx, mediaType, segStart, segEnd, mediaIn, projectItem });
+        }
+      };
+      for (let i = 0; i < vCount; i++) await collect(await seq.getVideoTrack(i), i, 'video');
+      for (let i = 0; i < aCount; i++) await collect(await seq.getAudioTrack(i), i, 'audio');
+
+      if (!allItems.length) throw new Error('No clips found on the active sequence.');
+      setProgress(40);
+
+      /* 2. For each item, compute keep-segments (parts NOT inside any cut) */
+      const keeps = []; // {trackIdx, mediaType, oldStart, mediaIn, mediaOut, projectItem, dur}
+      for (const it of allItems) {
+        let parts = [{ s: it.segStart, e: it.segEnd, mOff: 0 }];
+        for (const cut of cutRanges) {
+          const next = [];
+          for (const p of parts) {
+            if (cut.end <= p.s || cut.start >= p.e)        next.push(p);
+            else if (cut.start <= p.s && cut.end >= p.e)    {/* fully removed */}
+            else if (cut.start <= p.s && cut.end <  p.e)    next.push({ s: cut.end, e: p.e,    mOff: p.mOff + (cut.end - p.s) });
+            else if (cut.start >  p.s && cut.end >= p.e)    next.push({ s: p.s,     e: cut.start, mOff: p.mOff });
+            else                                             { next.push({ s: p.s, e: cut.start, mOff: p.mOff });
+                                                              next.push({ s: cut.end, e: p.e,    mOff: p.mOff + (cut.end - p.s) }); }
+          }
+          parts = next;
+        }
+        for (const p of parts) {
+          if (p.e - p.s < 0.04) continue; // skip sub-frame slivers
+          keeps.push({
+            trackIdx: it.trackIdx, mediaType: it.mediaType,
+            oldStart: p.s, projectItem: it.projectItem,
+            mediaIn:  it.mediaIn + p.mOff,
+            mediaOut: it.mediaIn + p.mOff + (p.e - p.s),
+            dur: p.e - p.s,
+          });
+        }
+      }
+
+      /* 3. Compute rippled new positions: shift each keep left by total cut
+       *    duration that occurs before its old start time */
+      for (const k of keeps) {
+        let shift = 0;
+        for (const cut of cutRanges) {
+          if (cut.end <= k.oldStart) shift += (cut.end - cut.start);
+        }
+        k.newStart = k.oldStart - shift;
+      }
+      keeps.sort((a, b) => a.newStart - b.newStart);
+      setProgress(55);
+
+      /* 4. Build a TrackItemSelection containing every original item */
+      let selection;
+      ppro.TrackItemSelection.createEmptySelection(s => { selection = s; });
+      if (!selection) throw new Error('createEmptySelection returned no selection.');
+      for (const it of allItems) selection.addItem(it.item);
+
+      const editor = ppro.SequenceEditor.getEditor(seq);
+      if (!editor) throw new Error('SequenceEditor.getEditor returned null.');
+      const MEDIA_ANY = (ppro.Constants && ppro.Constants.MediaType && ppro.Constants.MediaType.ANY) || 0;
+      setProgress(70);
+
+      /* 5. ONE transaction: remove everything, then re-insert each keep at its
+       *    rippled position with source in/out reset for that segment.  Actions
+       *    inside a CompoundAction execute in addition order. */
+      const ok = project.executeTransaction(compound => {
+        const removeAct = editor.createRemoveItemsAction(selection, false, MEDIA_ANY, false);
+        if (removeAct) compound.addAction(removeAct);
+
+        for (const k of keeps) {
+          const inT  = ppro.TickTime.createWithSeconds(k.mediaIn);
+          const outT = ppro.TickTime.createWithSeconds(k.mediaOut);
+          if (k.projectItem && typeof k.projectItem.createSetInOutPointsAction === 'function') {
+            const setIO = k.projectItem.createSetInOutPointsAction(inT, outT);
+            if (setIO) compound.addAction(setIO);
+          }
+          const startT = ppro.TickTime.createWithSeconds(k.newStart);
+          const ow = editor.createOverwriteItemAction(
+            k.projectItem, startT,
+            k.mediaType === 'video' ? k.trackIdx : -1,
+            k.mediaType === 'audio' ? k.trackIdx : -1,
+          );
+          if (ow) compound.addAction(ow);
+        }
+      }, `Filler Remover — remove ${cutRanges.length} ranges (${total} cuts)`);
+
+      if (!ok) throw new Error('Premiere refused the transaction (sequence may be read-only).');
+      setProgress(100);
+
+    } catch (cutErr) {
+      /* ── Fallback: marker mode ── */
+      console.warn('[FillerRemover] real-cut failed, falling back to markers:', cutErr.message);
+      mode = 'markers';
+      setStatus(`Real-cut unavailable — adding ${total} markers instead…`, 'busy');
+      setProgress(40);
+
+      if (!ppro.Markers || typeof ppro.Markers.getMarkers !== 'function')
+        throw new Error(`Both real-cut and marker fallback failed.\nReal-cut: ${cutErr.message}\nMarker: ppro.Markers.getMarkers missing`);
+      const markers = await ppro.Markers.getMarkers(seq);
+      if (!markers) throw new Error(`Real-cut failed AND marker fallback failed (no Markers collection).\nReal-cut: ${cutErr.message}`);
+
+      const ok2 = project.executeTransaction(compound => {
+        raw.forEach((cut, idx) => {
+          const start    = makeTime(ppro, cut.start);
+          const duration = makeTime(ppro, Math.max(cut.end - cut.start, 0.04));
+          const label    = `CUT ${idx + 1}/${total} — ${cut.reason || 'filler'}`;
+          const comment  = `[${cut.start.toFixed(2)}s → ${cut.end.toFixed(2)}s]` +
+                           (cut.word ? ` "${cut.word}"` : '') +
+                           (cut.text ? ` "${cut.text.slice(0, 60)}"` : '');
+          const action = markers.createAddMarkerAction(label, 'Comment', start, duration, comment);
+          if (action) compound.addAction(action);
+        });
+      }, `Filler Remover — add ${total} cut markers (fallback)`);
+      if (!ok2) throw new Error(`Marker fallback transaction refused. Real-cut error: ${cutErr.message}`);
+      setProgress(100);
     }
-    const markers = await ppro.Markers.getMarkers(seq);
-    if (!markers || typeof markers.createAddMarkerAction !== 'function') {
-      throw new Error('Could not get Markers collection from sequence.');
+
+    /* ── Success messaging ── */
+    if (mode === 'cuts') {
+      setStatus(`✓ ${total} cuts applied — timeline trimmed`, 'ok');
+      applyStatus.innerHTML = '';
+      applyStatus.appendChild(badge(`✓ ${total} cut${total !== 1 ? 's' : ''} applied to timeline — Ctrl+Z to undo all at once`, 'ok'));
+      const hint = document.createElement('div');
+      hint.style.cssText = 'font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5';
+      hint.innerHTML =
+        '<b>Done.</b> Timeline has been trimmed in place.<br>' +
+        '• Single Ctrl+Z undoes all cuts<br>' +
+        '• Continue editing in Premiere normally';
+      applyStatus.appendChild(hint);
+    } else {
+      setStatus(`✓ ${total} cut markers added (fallback mode)`, 'ok');
+      applyStatus.innerHTML = '';
+      applyStatus.appendChild(badge(`⚠ ${total} marker${total !== 1 ? 's' : ''} added (auto-cut unavailable on this Premiere build)`, 'warn'));
+      const hint = document.createElement('div');
+      hint.style.cssText = 'font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5';
+      hint.innerHTML =
+        '<b>Markers placed.</b> To remove each cut range manually:<br>' +
+        '• <kbd>Shift+M</kbd> jumps to next marker<br>' +
+        '• <kbd>Q</kbd> / <kbd>W</kbd> set in/out at marker bounds<br>' +
+        '• <kbd>Shift+Delete</kbd> ripple-deletes the range';
+      applyStatus.appendChild(hint);
     }
-
-    setProgress(50);
-
-    /* Build all marker actions inside ONE undoable transaction */
-    const ok = project.executeTransaction(compound => {
-      cutsToApply.forEach((cut, idx) => {
-        const start    = makeTime(ppro, cut.start);
-        const duration = makeTime(ppro, Math.max(cut.end - cut.start, 0.04));
-        const label    = `CUT ${idx + 1}/${total} — ${cut.reason || 'filler'}`;
-        const comment  = `[${cut.start.toFixed(2)}s → ${cut.end.toFixed(2)}s]` +
-                         (cut.word ? ` "${cut.word}"` : '') +
-                         (cut.text ? ` "${cut.text.slice(0, 60)}"` : '');
-        /* createAddMarkerAction(name, type, startTime, duration, comments) */
-        const action = markers.createAddMarkerAction(label, 'Comment', start, duration, comment);
-        if (action) compound.addAction(action);
-      });
-    }, `Filler Remover — add ${total} cut markers`);
-
-    if (!ok) throw new Error('Premiere refused the transaction (sequence may be read-only).');
-
-    setProgress(100);
-    setStatus(`✓ ${total} cut marker${total !== 1 ? 's' : ''} added`, 'ok');
-    applyStatus.innerHTML = '';
-    applyStatus.appendChild(badge(`✓ ${total} marker${total !== 1 ? 's' : ''} added — Ctrl+Z to undo all at once`, 'ok'));
-    const hint = document.createElement('div');
-    hint.style.cssText = 'font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5';
-    hint.innerHTML =
-      '<b>Next:</b> Each red marker spans a cut range.<br>' +
-      '• Press <kbd>Shift+M</kbd> to jump to next marker<br>' +
-      '• Use <kbd>Q</kbd> / <kbd>W</kbd> at the marker bounds to set in/out<br>' +
-      '• Press <kbd>Shift+Delete</kbd> for ripple delete<br>' +
-      '<i>v1.0.2 will automate this step.</i>';
-    applyStatus.appendChild(hint);
     applyStatus.style.display = '';
     selectedIdx.clear();
     updateApplyBtn();
