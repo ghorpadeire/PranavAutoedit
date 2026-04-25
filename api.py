@@ -1,0 +1,286 @@
+"""
+api.py — FastAPI REST service wrapping the filler-removal pipeline.
+
+Endpoints
+---------
+GET  /health              → {status, model, version}
+POST /v1/analyze          → {elapsed, final, flagged, word_count, ...}  (multipart)
+POST /v1/analyze-raw      → same, but accepts raw JSON body              (UXP plugin)
+
+Auth
+----
+Every /v1/* request requires two headers:
+  X-API-Key    : product key (set API_KEYS env var, comma-separated, default 'devkey')
+  X-Claude-Key : caller's own Anthropic key — used for THIS request only, never stored
+
+Design note: synchronous for now (PR #6/#7).
+Async + Redis job queue added in PR #8 after manual Premiere Pro testing confirms
+the pipeline produces correct results end-to-end.
+
+Rate limiting: 10 requests/minute per product key (NOT per IP — MNC offices
+route many editors through a single IP address).
+"""
+
+import json
+import logging
+import os
+import tempfile
+import time
+
+from typing import Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, UploadFile
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
+import config
+import pipeline
+
+# ---------------------------------------------------------------------------
+# Logging — JSON lines so Railway/Render dashboard can filter by field
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format='{"time":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s"}',
+)
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Auth — product key
+# ---------------------------------------------------------------------------
+_API_KEYS: set[str] = set(
+    k for k in os.environ.get('API_KEYS', 'devkey').split(',') if k.strip()
+)
+
+
+def require_api_key(x_api_key: str = Header(...)) -> str:
+    """FastAPI dependency — validates X-API-Key header."""
+    if x_api_key not in _API_KEYS:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    return x_api_key
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting — keyed on product key, NOT on IP address
+# ---------------------------------------------------------------------------
+def _key_from_header(request: Request) -> str:
+    """Return the product key (or client IP as fallback) for rate-limit bucketing."""
+    return request.headers.get('x-api-key', request.client.host)
+
+
+limiter = Limiter(key_func=_key_from_header)
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+app = FastAPI(
+    title="PranavAutoedit API",
+    description=(
+        "Filler-removal pipeline for Adobe Premiere Pro transcripts. "
+        "Upload a transcript JSON, receive confirmed cut ranges."
+    ),
+    version="1.0.0",
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get('/health', tags=['System'])
+def health() -> dict:
+    """Uptime probe for Railway / Render. Returns 200 when the service is ready."""
+    return {
+        'status': 'ok',
+        'model':  config.CLAUDE_MODEL,
+        'version': '1.0.0',
+    }
+
+
+@app.post('/v1/read-transcript', tags=['Utility'])
+async def read_transcript(
+    request: Request,
+    _key: str = Depends(require_api_key),
+) -> dict:
+    """
+    Read a transcript JSON file from the **local** filesystem by path.
+
+    Intended for the Premiere Pro UXP plugin running on the same machine as the
+    local backend.  The UXP sandbox blocks direct file access (no working
+    localFileSystem API in Premiere Pro 2026), so the plugin delegates file I/O
+    to this endpoint.
+
+    **Not suitable for cloud deployments** — the backend cannot reach the
+    client's filesystem over the internet.
+
+    Body: ``{"path": "F:\\\\Project\\\\transcript.json"}``
+
+    Returns::
+
+        {
+          "content":   "<raw JSON string>",   # pass directly to /v1/analyze-raw
+          "word_count": 699,
+          "segments":   12
+        }
+
+    Security constraints (enforced server-side):
+    - Path must end with ``.json``
+    - Path must not contain ``..`` (no directory traversal)
+    - Requires valid ``X-API-Key`` header
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be JSON")
+
+    path: str = (body.get('path') or '').strip()
+    if not path:
+        raise HTTPException(status_code=422, detail="Missing 'path' in request body")
+    if '..' in path:
+        raise HTTPException(status_code=422, detail="Path must not contain '..'")
+    if not path.lower().endswith('.json'):
+        raise HTTPException(status_code=422, detail="Path must end with .json")
+
+    try:
+        with open(path, encoding='utf-8') as fh:
+            content = fh.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail=f"Permission denied: {path}")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot read file: {exc}")
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="File is not valid JSON")
+
+    if 'segments' not in data:
+        raise HTTPException(status_code=422, detail="JSON missing required key 'segments'")
+
+    word_count = sum(len(seg.get('words', [])) for seg in data['segments'])
+    log.info(f"read_transcript path={path!r} words={word_count}")
+    return {
+        'content':    content,
+        'word_count': word_count,
+        'segments':   len(data['segments']),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Shared validation + pipeline execution
+# (used by both /v1/analyze and /v1/analyze-raw)
+# ---------------------------------------------------------------------------
+
+async def _run_pipeline(content: bytes, claude_key: str, gap_threshold: Optional[float] = None) -> dict:
+    """
+    Validate *content*, write to a temp file, run the pipeline, clean up.
+    Raises HTTPException on any error — never leaks temp files.
+    """
+    max_bytes = config.MAX_FILE_SIZE_MB * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Content too large — max {config.MAX_FILE_SIZE_MB} MB",
+        )
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="Body is not valid JSON")
+
+    if 'segments' not in data:
+        raise HTTPException(
+            status_code=422,
+            detail="JSON missing required key 'segments'",
+        )
+
+    tmp = tempfile.NamedTemporaryFile(mode='wb', suffix='.json', delete=False)
+    tmp.write(content)
+    tmp.close()
+
+    t0 = time.time()
+    try:
+        result = pipeline.run(tmp.name, claude_api_key=claude_key, gap_threshold=gap_threshold)
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Internal error: temp file missing")
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=f"AI response error: {exc}")
+    except Exception as exc:
+        log.error(f"pipeline_error={exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+    elapsed = round(time.time() - t0, 2)
+    log.info(
+        f"status=done words={result['word_count']} "
+        f"cuts={result['final_count']} elapsed={elapsed}s"
+    )
+    return {'elapsed': elapsed, **result}
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post('/v1/analyze', tags=['Pipeline'])
+@limiter.limit('10/minute')
+async def analyze(
+    request: Request,
+    file: UploadFile,
+    x_claude_key: str = Header(...,
+        description="Your personal Anthropic API key (sk-ant-...). "
+                    "Used for this request only — never stored."),
+    _key: str = Depends(require_api_key),
+    gap_threshold: Optional[float] = Query(
+        default=None, ge=0.1, le=5.0,
+        description="Seconds of silence to flag as a long gap (overrides server default 0.8 s).",
+    ),
+) -> dict:
+    """
+    Analyze a Premiere Pro transcript JSON and return filler cut ranges.
+
+    - **file**: Premiere transcript JSON (multipart upload)
+    - **X-Claude-Key**: Your Anthropic API key
+    - **X-API-Key**: Product key
+    - **gap_threshold**: Optional silence threshold override (0.1–5.0 s)
+
+    Returns confirmed cuts (`final`), uncertain cuts (`flagged`), and stats.
+    The call blocks ~5–15 s while the AI reviews candidate cuts.
+    """
+    content = await file.read()
+    return await _run_pipeline(content, x_claude_key, gap_threshold=gap_threshold)
+
+
+@app.post('/v1/analyze-raw', tags=['Pipeline'])
+@limiter.limit('10/minute')
+async def analyze_raw(
+    request: Request,
+    x_claude_key: str = Header(...,
+        description="Your personal Anthropic API key (sk-ant-...). "
+                    "Used for this request only — never stored."),
+    _key: str = Depends(require_api_key),
+    gap_threshold: Optional[float] = Query(
+        default=None, ge=0.1, le=5.0,
+        description="Seconds of silence to flag as a long gap (overrides server default 0.8 s).",
+    ),
+) -> dict:
+    """
+    Same as `/v1/analyze` but accepts a **raw JSON body** instead of multipart.
+
+    Used by the Premiere Pro UXP plugin (avoids multipart encoding in UXP fetch).
+
+    - **Body**: Premiere transcript JSON (Content-Type: application/json)
+    - **X-Claude-Key**: Your Anthropic API key
+    - **X-API-Key**: Product key
+    - **gap_threshold**: Optional silence threshold override (0.1–5.0 s)
+    """
+    content = await request.body()
+    return await _run_pipeline(content, x_claude_key, gap_threshold=gap_threshold)

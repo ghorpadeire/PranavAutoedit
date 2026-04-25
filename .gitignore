@@ -14,6 +14,10 @@ removals.json
 # Claude internal
 .claude/
 
+# API keys — never commit these
+claudekey.txt
+*.key
+
 # Python
 __pycache__/
 *.pyc

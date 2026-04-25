@@ -144,6 +144,34 @@ class TestFalseStartDetection(unittest.TestCase):
         self.assertEqual(len(false_starts), 0)
 
 
+class TestDetectRemovalsOutputOrder(unittest.TestCase):
+    """detect_removals() must return candidates sorted by start time."""
+
+    def test_output_sorted_for_simple_input(self):
+        words = [
+            word('um',     0.0, 0.2),
+            word('Hello',  0.5, 0.3),
+            word('world.', 0.8, 0.3, eos=True),
+            word('uh',     2.0, 0.2),
+            word('Bye.',   2.5, 0.4, eos=True),
+        ]
+        result = detect_removals(words)
+        starts = [r['start'] for r in result]
+        self.assertEqual(starts, sorted(starts), "detect_removals output must be sorted by start time")
+
+    def test_output_sorted_with_gap(self):
+        # Long gap should appear between two filler words and stay in order
+        words = [
+            word('um',     0.0, 0.2),
+            word('Hello',  0.5, 0.3),
+            word('world.', 0.8, 0.3, eos=True),
+            word('right',  3.0, 0.3, eos=True),   # 2.1 s gap before this word
+        ]
+        result = detect_removals(words, gap_threshold=0.5)
+        starts = [r['start'] for r in result]
+        self.assertEqual(starts, sorted(starts))
+
+
 class TestMergeOverlaps(unittest.TestCase):
     def test_overlapping_ranges_merged(self):
         removals = [
@@ -169,10 +197,13 @@ class TestMergeOverlaps(unittest.TestCase):
         ]
         self.assertEqual(len(merge_overlaps(removals)), 1)
 
-    def test_unsorted_input_sorted_in_output(self):
+    def test_presorted_input_handled_correctly(self):
+        # merge_overlaps requires pre-sorted input — sort is guaranteed by
+        # detect_removals() via its two-pointer merge (false_start entries
+        # are accumulated separately and merged in at the end).
         removals = [
-            {'start': 5.0, 'end': 6.0, 'reason': 'disfluency'},
             {'start': 1.0, 'end': 2.0, 'reason': 'long_gap'},
+            {'start': 5.0, 'end': 6.0, 'reason': 'disfluency'},
         ]
         merged = merge_overlaps(removals)
         self.assertEqual(merged[0]['start'], 1.0)
