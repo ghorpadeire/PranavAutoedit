@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Filler Remover</title>
+  <style>
+    /* ── Design tokens (matches Premiere Pro dark theme) ── */
+    :root {
+      --bg:        #2b2b2b;
+      --surface:   #383838;
+      --deep:      #1e1e1e;
+      --text:      #e0e0e0;
+      --dim:       #999;
+      --accent:    #4a9eff;
+      --success:   #5cb85c;
+      --warn:      #f0ad4e;
+      --error:     #d9534f;
+      --border:    #4a4a4a;
+      --radius:    4px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Adobe Clean', 'Source Sans Pro', Arial, sans-serif;
+      font-size: 12px;
+      color: var(--text);
+      background: var(--bg);
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* ── Section card ── */
+    section {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    h3 {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--dim);
+    }
+
+    label { font-size: 11px; color: var(--dim); }
+
+    /* ── Inputs ── */
+    input[type="password"],
+    input[type="text"],
+    input[type="url"] {
+      width: 100%;
+      padding: 6px 8px;
+      background: var(--deep);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 12px;
+      outline: none;
+    }
+    input:focus { border-color: var(--accent); }
+
+    /* ── Buttons ── */
+    button {
+      padding: 7px 12px;
+      border-radius: var(--radius);
+      border: none;
+      font-size: 12px;
+      cursor: pointer;
+      transition: opacity 0.12s;
+      outline: none;
+    }
+    button:hover:not(:disabled) { opacity: 0.85; }
+    button:disabled { opacity: 0.38; cursor: not-allowed; }
+
+    .btn-primary   { background: var(--accent); color: #fff; width: 100%; font-weight: 600; }
+    .btn-secondary { background: var(--deep); border: 1px solid var(--border); color: var(--text); width: 100%; }
+    .btn-sm        { padding: 4px 9px; font-size: 11px; width: auto; }
+
+    /* ── Layout helpers ── */
+    .row { display: flex; gap: 6px; align-items: center; }
+    .row input { flex: 1; }
+
+    /* ── Status chips ── */
+    .success { color: var(--success); font-size: 11px; }
+    .error   { color: var(--error);   font-size: 11px; }
+    .dim     { color: var(--dim);     font-size: 11px; }
+
+    .tag {
+      display: inline-block;
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: var(--border);
+      color: var(--dim);
+    }
+    .tag-warn { background: #5a3d00; color: var(--warn); }
+
+    /* ── File label ── */
+    #fileLabel { font-size: 11px; font-style: italic; color: var(--dim); }
+    #fileLabel.ok { font-style: normal; color: var(--text); }
+
+    /* ── Spinner ── */
+    #spinner { display: none; font-size: 11px; color: var(--dim); }
+    #spinner.on { display: block; }
+
+    /* ── Results ── */
+    #resultsSection { display: none; }
+
+    #stats {
+      font-size: 11px;
+      color: var(--dim);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      line-height: 1.8;
+    }
+    #stats b { color: var(--text); }
+
+    #cutsList {
+      max-height: 280px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .cut {
+      background: var(--deep);
+      border-left: 3px solid var(--accent);
+      padding: 4px 8px;
+      border-radius: 0 3px 3px 0;
+      font-size: 11px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .cut.flagged { border-left-color: var(--warn); }
+    .cut .ts { color: var(--dim); }
+
+    /* ── Advanced accordion ── */
+    details summary {
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--dim);
+      user-select: none;
+      list-style: none;
+      padding: 2px 0;
+    }
+    details summary::before { content: '▸ '; }
+    details[open] summary::before { content: '▾ '; }
+    details[open] summary { margin-bottom: 6px; }
+
+    .adv-grid { display: flex; flex-direction: column; gap: 6px; }
+  </style>
+</head>
+
+<body>
+
+  <!-- ── 1. API Key ─────────────────────────────────── -->
+  <section>
+    <h3>🔑 Anthropic API Key</h3>
+    <label>Your personal key — stored securely on this machine, never sent anywhere else</label>
+    <div class="row">
+      <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off" />
+      <button class="btn-secondary btn-sm" id="saveKeyBtn">Save</button>
+    </div>
+    <div id="keyStatus" class="dim"></div>
+  </section>
+
+  <!-- ── 2. Get Transcript ──────────────────────────── -->
+  <section>
+    <h3>📄 Transcript</h3>
+    <label>
+      Export from Premiere: <em>File → Export → Transcript…</em>
+      then click below to select the .json file
+    </label>
+    <button class="btn-secondary" id="browseBtn">📂 Get Transcript from Premiere…</button>
+    <div id="fileLabel">No file selected</div>
+  </section>
+
+  <!-- ── 3. Analyze ────────────────────────────────── -->
+  <section>
+    <button class="btn-primary" id="analyzeBtn" disabled>▶&nbsp; Analyze Fillers</button>
+    <div id="spinner" class="">⏳&nbsp; Analyzing… please wait (~10–15 s)</div>
+    <div id="analyzeError" class="error" style="display:none"></div>
+  </section>
+
+  <!-- ── 4. Results ────────────────────────────────── -->
+  <section id="resultsSection">
+    <h3>📊 Results</h3>
+    <div id="stats"></div>
+    <div id="cutsList"></div>
+    <div style="display:flex; gap:6px; margin-top:4px">
+      <button class="btn-secondary btn-sm" id="copyFinalBtn">📋 Copy cuts JSON</button>
+      <button class="btn-secondary btn-sm" id="copyAllBtn">📋 Copy full report</button>
+    </div>
+  </section>
+
+  <!-- ── 5. Advanced settings ──────────────────────── -->
+  <section>
+    <details>
+      <summary>Advanced settings</summary>
+      <div class="adv-grid">
+        <label>Backend URL  <span class="tag">change when using cloud</span></label>
+        <input type="url" id="backendUrl" value="http://localhost:8000" />
+        <label>Product Key  <span class="tag">leave as devkey for local</span></label>
+        <input type="text" id="productKey" value="devkey" autocomplete="off" />
+        <div class="row">
+          <button class="btn-secondary btn-sm" id="saveAdvBtn">Save</button>
+          <span id="advStatus" class="dim"></span>
+        </div>
+      </div>
+    </details>
+  </section>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<script>
+'use strict';
+
+/* ── UXP APIs ─────────────────────────────────────── */
+const uxp         = require('uxp');
+const fs          = uxp.storage.localFileSystem;
+const secureStore = uxp.storage.secureStorage;
+const formats     = uxp.storage.formats;
+
+/* ── State ────────────────────────────────────────── */
+let transcriptText = null;   // raw JSON string of selected file
+let lastResult     = null;   // most recent API response
+
+/* ── DOM refs ─────────────────────────────────────── */
+const $  = id => document.getElementById(id);
+const apiKeyEl       = $('apiKey');
+const saveKeyBtn     = $('saveKeyBtn');
+const keyStatus      = $('keyStatus');
+const browseBtn      = $('browseBtn');
+const fileLabel      = $('fileLabel');
+const analyzeBtn     = $('analyzeBtn');
+const spinner        = $('spinner');
+const analyzeError   = $('analyzeError');
+const resultsSection = $('resultsSection');
+const statsEl        = $('stats');
+const cutsListEl     = $('cutsList');
+const copyFinalBtn   = $('copyFinalBtn');
+const copyAllBtn     = $('copyAllBtn');
+const backendUrlEl   = $('backendUrl');
+const productKeyEl   = $('productKey');
+const saveAdvBtn     = $('saveAdvBtn');
+const advStatus      = $('advStatus');
+
+/* ── Secure storage helpers ───────────────────────── */
+async function secureGet(key) {
+  try {
+    const val = await secureStore.getItem(key);
+    if (!val) return '';
+    if (typeof val === 'string') return val;
+    return new TextDecoder().decode(val);   // UXP returns Uint8Array in some versions
+  } catch { return ''; }
+}
+
+async function secureSet(key, value) {
+  await secureStore.setItem(key, value);
+}
+
+/* ── Format seconds → m:ss.s or h:mm:ss.s ────────── */
+function fmt(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = (sec % 60).toFixed(1).padStart(4, '0');
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${s}`
+    : `${m}:${s}`;
+}
+
+/* ── Enable Analyze only when key + file both present ── */
+function refreshReady() {
+  const hasKey  = apiKeyEl.value.trim().startsWith('sk-');
+  const hasFile = transcriptText !== null;
+  analyzeBtn.disabled = !(hasKey && hasFile);
+}
+
+/* ── On startup: restore all saved values ─────────── */
+(async () => {
+  const [savedKey, savedUrl, savedProd] = await Promise.all([
+    secureGet('CLAUDE_API_KEY'),
+    secureGet('BACKEND_URL'),
+    secureGet('PRODUCT_KEY'),
+  ]);
+  if (savedKey)  { apiKeyEl.value     = savedKey;  keyStatus.textContent = '✓ Key loaded'; }
+  if (savedUrl)  { backendUrlEl.value = savedUrl; }
+  if (savedProd) { productKeyEl.value = savedProd; }
+  refreshReady();
+})();
+
+/* ── Save API key ─────────────────────────────────── */
+saveKeyBtn.addEventListener('click', async () => {
+  const key = apiKeyEl.value.trim();
+  if (!key.startsWith('sk-')) {
+    keyStatus.textContent = '✗ Key must start with sk-';
+    keyStatus.className = 'error';
+    return;
+  }
+  await secureSet('CLAUDE_API_KEY', key);
+  keyStatus.textContent = '✓ Saved securely';
+  keyStatus.className = 'success';
+  refreshReady();
+});
+
+apiKeyEl.addEventListener('input', () => {
+  keyStatus.textContent = '';
+  refreshReady();
+});
+
+/* ── Browse for transcript file ───────────────────── */
+browseBtn.addEventListener('click', async () => {
+  browseBtn.disabled = true;
+  try {
+    const file = await fs.getFileForOpening({
+      allowMultiple: false,
+      types: ['json'],
+    });
+
+    if (!file) { browseBtn.disabled = false; return; }  // user cancelled
+
+    const content = await file.read({ format: formats.utf8 });
+
+    /* Quick schema validation before accepting */
+    let parsed;
+    try { parsed = JSON.parse(content); }
+    catch {
+      fileLabel.textContent = '✗ Not valid JSON — wrong file?';
+      fileLabel.className = 'error';
+      transcriptText = null;
+      refreshReady();
+      return;
+    }
+    if (!parsed.segments) {
+      fileLabel.textContent = '✗ Missing "segments" key — export the transcript first';
+      fileLabel.className = 'error';
+      transcriptText = null;
+      refreshReady();
+      return;
+    }
+
+    transcriptText = content;
+    fileLabel.textContent = '✓  ' + file.name
+      + '  (' + parsed.segments.length + ' segments)';
+    fileLabel.className = 'ok';
+    resultsSection.style.display = 'none';
+    analyzeError.style.display = 'none';
+    lastResult = null;
+    refreshReady();
+
+  } catch (err) {
+    fileLabel.textContent = '✗ Could not open file: ' + err.message;
+    fileLabel.className = 'error';
+  } finally {
+    browseBtn.disabled = false;
+  }
+});
+
+/* ── Analyze ──────────────────────────────────────── */
+analyzeBtn.addEventListener('click', async () => {
+  const claudeKey  = apiKeyEl.value.trim();
+  const backendUrl = backendUrlEl.value.trim().replace(/\/+$/, '');
+  const productKey = productKeyEl.value.trim();
+
+  /* Loading state */
+  analyzeBtn.disabled       = true;
+  spinner.className         = 'on';
+  analyzeError.style.display = 'none';
+  resultsSection.style.display = 'none';
+
+  try {
+    const response = await fetch(`${backendUrl}/v1/analyze-raw`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key':    productKey,
+        'X-Claude-Key': claudeKey,
+      },
+      body: transcriptText,
+    });
+
+    if (!response.ok) {
+      let detail = response.statusText;
+      try { detail = (await response.json()).detail || detail; } catch { /* ignore */ }
+      throw new Error(`${response.status}: ${detail}`);
+    }
+
+    const result = await response.json();
+    lastResult = result;
+    renderResults(result);
+    resultsSection.style.display = '';
+
+  } catch (err) {
+    analyzeError.textContent   = '✗ ' + err.message;
+    analyzeError.style.display = '';
+  } finally {
+    spinner.className   = '';
+    analyzeBtn.disabled = false;
+    refreshReady();
+  }
+});
+
+/* ── Render results list ──────────────────────────── */
+function renderResults(r) {
+  statsEl.innerHTML = `
+    Words: <b>${r.word_count.toLocaleString()}</b>
+    &nbsp;Candidates: <b>${r.candidate_count}</b>
+    &nbsp;Cuts: <b>${r.final_count}</b>
+    &nbsp;Kept: <b>${r.keep_count}</b>
+    &nbsp;Flagged: <b>${r.flagged_count}</b>
+    &nbsp;Time: <b>${r.elapsed}s</b>
+  `;
+
+  cutsListEl.innerHTML = '';
+
+  if (!r.final_count && !r.flagged_count) {
+    cutsListEl.innerHTML = '<div class="dim" style="padding:6px 0">No cuts found — transcript looks clean 🎉</div>';
+    return;
+  }
+
+  const allCuts = [
+    ...r.final.map(c   => ({ ...c, _type: 'remove'  })),
+    ...r.flagged.map(c => ({ ...c, _type: 'flagged' })),
+  ].sort((a, b) => a.start - b.start);
+
+  for (const cut of allCuts) {
+    const div = document.createElement('div');
+    div.className = cut._type === 'flagged' ? 'cut flagged' : 'cut';
+    const reasonText = cut.ai_reason || cut.reason || '';
+    div.innerHTML = `
+      <span class="ts">${fmt(cut.start)} → ${fmt(cut.end)}</span>
+      <span>
+        ${cut._type === 'flagged'
+          ? '<span class="tag tag-warn">review</span> '
+          : ''}
+        <span class="tag">${reasonText}</span>
+      </span>
+    `;
+    cutsListEl.appendChild(div);
+  }
+}
+
+/* ── Copy helpers ─────────────────────────────────── */
+async function copyText(text, btn, label) {
+  if (!lastResult) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = '✓ Copied!';
+  } catch {
+    btn.textContent = '✗ Failed';
+  }
+  setTimeout(() => { btn.textContent = label; }, 2000);
+}
+
+copyFinalBtn.addEventListener('click', () =>
+  copyText(
+    JSON.stringify(lastResult.final, null, 2),
+    copyFinalBtn,
+    '📋 Copy cuts JSON'
+  )
+);
+copyAllBtn.addEventListener('click', () =>
+  copyText(
+    JSON.stringify(lastResult, null, 2),
+    copyAllBtn,
+    '📋 Copy full report'
+  )
+);
+
+/* ── Save advanced settings ───────────────────────── */
+saveAdvBtn.addEventListener('click', async () => {
+  await Promise.all([
+    secureSet('BACKEND_URL', backendUrlEl.value.trim()),
+    secureSet('PRODUCT_KEY', productKeyEl.value.trim()),
+  ]);
+  advStatus.textContent = '✓ Saved';
+  advStatus.className   = 'success';
+  setTimeout(() => { advStatus.textContent = ''; advStatus.className = 'dim'; }, 2000);
+});
+</script>
+</body>
+</html>
