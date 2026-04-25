@@ -1,11 +1,13 @@
 import json
 import sys
 
+import config
+
 TRANSCRIPT_FILE = 'Postpartum care what every mom should know.mp4.json'
 
-# Must match analyze_transcript.py
-STRONG_FILLERS          = {'um', 'uh', 'ah', 'er', 'hmm', 'hm', 'mm', 'mhm'}
-SENTENCE_START_FILLERS  = {'okay', 'so', 'right', 'well', 'alright', 'anyway'}
+# Single source of truth — imported from config.py
+STRONG_FILLERS         = config.STRONG_FILLERS
+SENTENCE_START_FILLERS = config.SENTENCE_START_FILLERS
 
 def load_words(path):
     with open(path) as f:
