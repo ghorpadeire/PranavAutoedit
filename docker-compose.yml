@@ -1,0 +1,49 @@
+# ⚠️  MNC deployment: use Podman instead of Docker Desktop.
+# Docker Desktop requires a paid licence for companies >250 employees.
+# All commands are identical — just replace 'docker' with 'podman'.
+# Install Podman: https://podman.io/docs/installation
+
+# Usage (local dev):
+#   docker-compose up          → starts API + Redis
+#   docker-compose run api python -m unittest discover -s tests -v
+#
+# Required env var:
+#   ANTHROPIC_API_KEY  — not needed for tests (mocked), needed for live calls
+#   API_KEYS           — comma-separated product keys (e.g. key1,key2)
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Client brings their own Anthropic key — this is only for local dev/smoke-tests
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Product keys that are allowed to call /v1/analyze (comma-separated)
+      - API_KEYS=${API_KEYS:-devkey}
+      # Redis — auto-wired to the redis service above
+      - REDIS_URL=redis://redis:6379
+      # Tunable thresholds (all have sensible defaults in config.py)
+      - GAP_THRESHOLD=${GAP_THRESHOLD:-0.8}
+      - OVERLAP_THRESHOLD=${OVERLAP_THRESHOLD:-0.6}
+      - BIGRAM_THRESHOLD=${BIGRAM_THRESHOLD:-0.5}
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-sonnet-4-5}
+    depends_on:
+      redis:
+        condition: service_healthy
+    # Override CMD to start the API server instead of running tests
+    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      # Hot-reload: mount source so code changes appear without rebuilding
+      - .:/app
+    restart: unless-stopped
