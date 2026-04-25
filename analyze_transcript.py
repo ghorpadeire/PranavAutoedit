@@ -3,18 +3,28 @@ import sys
 import time
 from collections import deque
 
+import config
+
 INPUT_FILE = 'Postpartum care what every mom should know.mp4.json'
 OUTPUT_FILE = 'removals.json'
 
-GAP_THRESHOLD = 0.8      # seconds of silence = long gap
-OVERLAP_THRESHOLD = 0.6  # Jaccard similarity for false-start detection
+# All thresholds and word lists now live in config.py
+GAP_THRESHOLD          = config.GAP_THRESHOLD
+OVERLAP_THRESHOLD      = config.OVERLAP_THRESHOLD
+BIGRAM_THRESHOLD       = config.BIGRAM_THRESHOLD
+STRONG_FILLERS         = config.STRONG_FILLERS
+SENTENCE_START_FILLERS = config.SENTENCE_START_FILLERS
 
-# Tier 1: Always a filler — pure hesitation sounds, no legitimate use
-STRONG_FILLERS = {'um', 'uh', 'ah', 'er', 'hmm', 'hm', 'mm', 'mhm'}
+def ngrams(word_list: list, n: int = 2) -> set:
+    """
+    Return ordered n-gram tuples from a word list.
+    Used as a secondary false-start signal: catches stammers like
+    "I — I think" where Jaccard (unordered) would miss the repetition.
+    O(k) where k = sentence length.
+    """
+    tokens = [w['text'].lower().strip('.,!?') for w in word_list if w['text']]
+    return set(zip(tokens, tokens[1:])) if len(tokens) >= n else set()
 
-# Tier 2: Filler only at sentence start (after eos=True on previous word)
-# Mid-sentence these words are often legitimate ("feel okay", "turn right")
-SENTENCE_START_FILLERS = {'okay', 'so', 'right', 'well', 'alright', 'anyway'}
 
 def load_words(path):
     with open(path) as f:
@@ -73,7 +83,16 @@ def detect_removals(words):
                     prev_sent = sentences[seen_sentences[fp]]
                     prev_tokens = frozenset(w['text'].lower().strip('.,!?') for w in prev_sent)
                     jaccard = len(tokens & prev_tokens) / len(tokens | prev_tokens)
-                    if jaccard > OVERLAP_THRESHOLD:
+
+                    # Bigram secondary signal — ordered pairs catch stammers
+                    # like "I — I think" where unordered Jaccard would miss them
+                    bg_curr = ngrams(sent_words)
+                    bg_prev = ngrams(prev_sent)
+                    bigram_sim = (
+                        len(bg_curr & bg_prev) / max(len(bg_curr | bg_prev), 1)
+                    )
+
+                    if jaccard > OVERLAP_THRESHOLD or bigram_sim > BIGRAM_THRESHOLD:
                         removals.append({
                             'start': prev_sent[0]['start'],
                             'end': prev_sent[-1]['end'],
