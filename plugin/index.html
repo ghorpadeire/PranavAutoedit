@@ -284,7 +284,7 @@
 <!-- ═══════════════════════════════════════════ -->
 <div class="hdr">
   <div style="flex:1">
-    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.1</span></div>
+    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.2</span></div>
     <div class="hdr-status">
       <div class="status-dot" id="statusDot"></div>
       <span id="statusText">Ready — load a transcript to start</span>
@@ -935,21 +935,25 @@ async function resolveActiveSequence(ppro) {
 }
 
 /*
- * Create a Premiere Time object from seconds — handles API variations.
+ * Create a TickTime from seconds.
+ * Premiere Pro 25+/26+ canonical API per Adobe TypeScript types:
+ *   ppro.TickTime.createWithSeconds(seconds): TickTime
  */
 function makeTime(ppro, seconds) {
+  if (ppro.TickTime && typeof ppro.TickTime.createWithSeconds === 'function') {
+    return ppro.TickTime.createWithSeconds(seconds);
+  }
+  /* Legacy fallback (Premiere v22-24) */
   if (ppro.Time) {
-    /* Pattern A: new ppro.Time() with .seconds setter */
     try { const t = new ppro.Time(); t.seconds = seconds; return t; } catch {}
-    /* Pattern B: ppro.Time.fromSeconds() factory */
     if (typeof ppro.Time.fromSeconds === 'function')
       return ppro.Time.fromSeconds(seconds);
   }
-  /* Pattern C: Time is a property of ppro.app */
-  if (ppro.app && ppro.app.Time) {
-    const t = new ppro.app.Time(); t.seconds = seconds; return t;
-  }
-  throw new Error(`Cannot create Time object — ppro.Time is ${typeof ppro.Time}`);
+  throw new Error(
+    `Cannot create Time object.\n` +
+    `Expected ppro.TickTime.createWithSeconds (Premiere 25+) or ppro.Time (Premiere 22-24).\n` +
+    `Found: ppro.TickTime=${typeof ppro.TickTime}, ppro.Time=${typeof ppro.Time}`
+  );
 }
 
 applyBtn.addEventListener('click', async () => {
@@ -972,41 +976,63 @@ applyBtn.addEventListener('click', async () => {
 
   try {
     const seq = await resolveActiveSequence(ppro);
+    const project = await ppro.Project.getActiveProject();
 
-    /* Collect selected cuts and process end→start to preserve timestamps */
+    /* Selected cuts, sorted ascending by start time for marker numbering */
     const cutsToApply = [...selectedIdx]
       .map(i => allCuts[i]).filter(Boolean)
-      .sort((a, b) => b.start - a.start);
+      .sort((a, b) => a.start - b.start);
 
     const total = cutsToApply.length;
-    const eps   = 0.02;
+    if (!total) throw new Error('No cuts selected.');
 
-    for (let i = 0; i < cutsToApply.length; i++) {
-      const cut = cutsToApply[i];
-      setStatus(`Cutting ${i + 1} of ${total}…`, 'busy');
-      setProgress(10 + 88 * ((i + 1) / total));
+    setStatus(`Adding ${total} cut markers…`, 'busy');
+    setProgress(30);
 
-      const tStart = makeTime(ppro, cut.start);
-      const tEnd   = makeTime(ppro, cut.end);
-
-      seq.razor(tEnd);
-      seq.razor(tStart);
-
-      const allTracks = [...(seq.videoTracks || []), ...(seq.audioTracks || [])];
-      for (const track of allTracks) {
-        for (const clip of [...(track.clips || [])]) {
-          const cs = clip.start.seconds, ce = clip.end.seconds;
-          if (cs >= cut.start - eps && ce <= cut.end + eps && cs < ce) {
-            clip.remove(true, true);
-          }
-        }
-      }
+    /* Get the Markers collection for this sequence */
+    if (!ppro.Markers || typeof ppro.Markers.getMarkers !== 'function') {
+      throw new Error(
+        `Premiere API mismatch — ppro.Markers.getMarkers not found.\n` +
+        `ppro keys: ${Object.getOwnPropertyNames(ppro).join(', ')}`
+      );
+    }
+    const markers = await ppro.Markers.getMarkers(seq);
+    if (!markers || typeof markers.createAddMarkerAction !== 'function') {
+      throw new Error('Could not get Markers collection from sequence.');
     }
 
+    setProgress(50);
+
+    /* Build all marker actions inside ONE undoable transaction */
+    const ok = project.executeTransaction(compound => {
+      cutsToApply.forEach((cut, idx) => {
+        const start    = makeTime(ppro, cut.start);
+        const duration = makeTime(ppro, Math.max(cut.end - cut.start, 0.04));
+        const label    = `CUT ${idx + 1}/${total} — ${cut.reason || 'filler'}`;
+        const comment  = `[${cut.start.toFixed(2)}s → ${cut.end.toFixed(2)}s]` +
+                         (cut.word ? ` "${cut.word}"` : '') +
+                         (cut.text ? ` "${cut.text.slice(0, 60)}"` : '');
+        /* createAddMarkerAction(name, type, startTime, duration, comments) */
+        const action = markers.createAddMarkerAction(label, 'Comment', start, duration, comment);
+        if (action) compound.addAction(action);
+      });
+    }, `Filler Remover — add ${total} cut markers`);
+
+    if (!ok) throw new Error('Premiere refused the transaction (sequence may be read-only).');
+
     setProgress(100);
-    setStatus(`✓ ${total} cut${total !== 1 ? 's' : ''} applied`, 'ok');
+    setStatus(`✓ ${total} cut marker${total !== 1 ? 's' : ''} added`, 'ok');
     applyStatus.innerHTML = '';
-    applyStatus.appendChild(badge(`✓ ${total} cut${total !== 1 ? 's' : ''} applied — Ctrl+Z to undo any`, 'ok'));
+    applyStatus.appendChild(badge(`✓ ${total} marker${total !== 1 ? 's' : ''} added — Ctrl+Z to undo all at once`, 'ok'));
+    const hint = document.createElement('div');
+    hint.style.cssText = 'font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5';
+    hint.innerHTML =
+      '<b>Next:</b> Each red marker spans a cut range.<br>' +
+      '• Press <kbd>Shift+M</kbd> to jump to next marker<br>' +
+      '• Use <kbd>Q</kbd> / <kbd>W</kbd> at the marker bounds to set in/out<br>' +
+      '• Press <kbd>Shift+Delete</kbd> for ripple delete<br>' +
+      '<i>v1.0.2 will automate this step.</i>';
+    applyStatus.appendChild(hint);
     applyStatus.style.display = '';
     selectedIdx.clear();
     updateApplyBtn();
