@@ -910,13 +910,30 @@ async function resolveActiveSequence(ppro) {
     }
   }
 
+  /* --- Pattern 4: ppro.Project.getActiveProject() — Premiere Pro 26.x static API --- */
+  if (ppro.Project && typeof ppro.Project.getActiveProject === 'function') {
+    const proj = await ppro.Project.getActiveProject();
+    if (proj && typeof proj.getActiveSequence === 'function') {
+      const seq = await proj.getActiveSequence();
+      if (seq) return seq;
+    }
+  }
+
+  /* --- Pattern 5: ppro.Sequence.getActiveSequence() — flat static --- */
+  if (ppro.Sequence && typeof ppro.Sequence.getActiveSequence === 'function') {
+    const seq = await ppro.Sequence.getActiveSequence();
+    if (seq) return seq;
+  }
+
   /* --- Diagnostic: show what the module actually exposes --- */
   const topKeys  = Object.getOwnPropertyNames(ppro).join(', ') || '(none)';
   const appKeys  = ppro.app ? Object.getOwnPropertyNames(ppro.app).join(', ') : 'ppro.app is undefined';
+  const projKeys = ppro.Project ? Object.getOwnPropertyNames(ppro.Project).join(', ') : 'ppro.Project undefined';
   throw new Error(
     `Cannot find active sequence.\n` +
     `ppro keys: ${topKeys}\n` +
     `ppro.app keys: ${appKeys}\n` +
+    `ppro.Project keys: ${projKeys}\n` +
     `Open a sequence in the Premiere timeline, then try again.`
   );
 }
@@ -1002,9 +1019,13 @@ applyBtn.addEventListener('click', async () => {
     setProgress(0);
     setStatus('Apply failed', 'err');
     applyStatus.innerHTML = '';
-    /* Show first line of error prominently; full detail in console */
-    const firstLine = err.message.split('\n')[0];
-    applyStatus.appendChild(badge('✗ ' + firstLine, 'err'));
+    /* Show full error so user can copy the diagnostic */
+    const lines = err.message.split('\n');
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'font-size:10px;white-space:pre-wrap;word-break:break-all;margin-top:4px;color:var(--error)';
+    pre.textContent = err.message;
+    applyStatus.appendChild(badge('✗ ' + lines[0], 'err'));
+    applyStatus.appendChild(pre);
     applyStatus.style.display = '';
     console.error('[FillerRemover] Apply error:', err.message);
     backupConfirm.checked = false;
