@@ -14,9 +14,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy source
 COPY . .
 
-# Health check for Railway/Render uptime monitoring
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD python -c "import config, ai_review, pipeline; print('ok')" || exit 1
+EXPOSE 8000
 
-# Default: run tests (override with CMD in docker-compose or Railway)
-CMD ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
+# Health check — hits the /health endpoint once the server is up
+# CI overrides CMD to run tests: docker run pranavautoedit python -m unittest discover -s tests -v
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+# Default: start the API server
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
