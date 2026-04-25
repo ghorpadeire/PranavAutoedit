@@ -306,7 +306,7 @@
 <!-- ═══════════════════════════════════════════ -->
 <div class="hdr">
   <div style="flex:1">
-    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.7</span></div>
+    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.8</span></div>
     <div class="hdr-status">
       <div class="status-dot" id="statusDot"></div>
       <span id="statusText">Ready — load a transcript to start</span>
@@ -1057,13 +1057,10 @@ applyBtn.addEventListener('click', async () => {
     let mode = 'cuts';
     let realCutErrorMsg = '';   /* surfaced in the marker-fallback UI */
     try {
-      setStatus(`Cutting timeline (${cutRanges.length} ranges)…`, 'busy');
+      setStatus(`Analyzing timeline feasibility…`, 'busy');
       setProgress(20);
 
-      /* ── Resolve API constants from the official ppro module. The values
-       *    are integers but the named constants are required by the engine
-       *    (passing magic 0 for MediaType causes "Script action failed
-       *    to execute" in createRemoveItemsAction). ── */
+      /* ── Resolve API constants from the official ppro module. ── */
       const TYPE_CLIP   = (ppro.Constants && ppro.Constants.TrackItemType  && ppro.Constants.TrackItemType.CLIP);
       const MTYPE_VIDEO = (ppro.Constants && ppro.Constants.MediaType      && ppro.Constants.MediaType.VIDEO);
       if (TYPE_CLIP === undefined || MTYPE_VIDEO === undefined) {
@@ -1099,129 +1096,88 @@ applyBtn.addEventListener('click', async () => {
       if (!allItems.length) throw new Error('No clips found on the active sequence.');
       setProgress(40);
 
-      /* 2. For each item, compute keep-segments (parts NOT inside any cut) */
-      const keeps = []; // {trackIdx, mediaType, oldStart, mediaIn, mediaOut, projectItem, clipProjectItem, dur}
+      /* 2. FEASIBILITY CHECK — Premiere UXP has NO razor/split API (Adobe
+       *    confirmed in their forum). Real auto-cut only works for items
+       *    that fall ENTIRELY inside a cut range (those can be ripple-deleted
+       *    as whole units). Items that SPAN a cut boundary (cut is inside
+       *    the clip) cannot be split programmatically. We must detect this
+       *    BEFORE doing anything destructive. */
+      const removableItems = []; // items entirely inside some cut range
+      let unsplittableCount = 0; // items where a cut would need to split them
       for (const it of allItems) {
-        let parts = [{ s: it.segStart, e: it.segEnd, mOff: 0 }];
         for (const cut of cutRanges) {
-          const next = [];
-          for (const p of parts) {
-            if (cut.end <= p.s || cut.start >= p.e)        next.push(p);
-            else if (cut.start <= p.s && cut.end >= p.e)    {/* fully removed */}
-            else if (cut.start <= p.s && cut.end <  p.e)    next.push({ s: cut.end, e: p.e,    mOff: p.mOff + (cut.end - p.s) });
-            else if (cut.start >  p.s && cut.end >= p.e)    next.push({ s: p.s,     e: cut.start, mOff: p.mOff });
-            else                                             { next.push({ s: p.s, e: cut.start, mOff: p.mOff });
-                                                              next.push({ s: cut.end, e: p.e,    mOff: p.mOff + (cut.end - p.s) }); }
+          if (cut.start <= it.segStart + 0.01 && cut.end >= it.segEnd - 0.01) {
+            removableItems.push(it);
+            break;
           }
-          parts = next;
         }
-        for (const p of parts) {
-          if (p.e - p.s < 0.04) continue; // skip sub-frame slivers
-          keeps.push({
-            trackIdx: it.trackIdx, mediaType: it.mediaType,
-            oldStart: p.s,
-            projectItem:     it.projectItem,
-            clipProjectItem: it.clipProjectItem,
-            mediaIn:  it.mediaIn + p.mOff,
-            mediaOut: it.mediaIn + p.mOff + (p.e - p.s),
-            dur: p.e - p.s,
-          });
+        for (const cut of cutRanges) {
+          /* Cut starts AND ends strictly inside the item — would require split */
+          if (cut.start > it.segStart + 0.01 && cut.end < it.segEnd - 0.01) {
+            unsplittableCount++;
+            break;
+          }
         }
       }
 
-      /* 3. Compute rippled new positions: shift each keep left by total cut
-       *    duration occurring before its old start. */
-      for (const k of keeps) {
-        let shift = 0;
-        for (const cut of cutRanges) if (cut.end <= k.oldStart) shift += (cut.end - cut.start);
-        k.newStart = k.oldStart - shift;
+      if (removableItems.length === 0) {
+        throw new Error(
+          `No clips are fully contained in any cut range — Premiere UXP cannot split clips at arbitrary times (no razor API in v1.0). ` +
+          `Your timeline has ${allItems.length} clip(s) with ${unsplittableCount} that span cut boundaries. ` +
+          `Falling back to marker mode.`
+        );
       }
+      setProgress(50);
 
-      /* 3b. DEDUPE — V1 + A1 + A2 + A3 from same source produce 4 identical
-       *     keep segments per cut. One overwrite per (clipProjectItem, oldStart,
-       *     mediaIn, mediaOut) is enough; Premiere routes A/V automatically. */
-      const seenKeeps = new Map();
-      for (const k of keeps) {
-        const id = (k.clipProjectItem && k.clipProjectItem.getId) ? k.clipProjectItem.getId()
-                 : (k.projectItem && k.projectItem.getId)         ? k.projectItem.getId() : '?';
-        const key = `${id}|${k.oldStart.toFixed(4)}|${k.mediaIn.toFixed(4)}|${k.mediaOut.toFixed(4)}`;
-        if (!seenKeeps.has(key)) seenKeeps.set(key, k);
-      }
-      const uniqueKeeps = [...seenKeeps.values()].sort((a, b) => a.newStart - b.newStart);
-      setProgress(55);
-
-      /* ── PHASE 1: REMOVE every original track item ──────────────────────
-       *    Per Adobe sample sequenceEditor.ts:163-172 the canonical pattern
-       *    is: action creation INSIDE lockedAccess, ripple=true,
-       *    third arg = MediaType.VIDEO (frame-alignment, not "what types
-       *    to remove"). Selection built via sequence.getSelection() which
-       *    returns the existing selection object whose addItem actually
-       *    works (createEmptySelection's addItem is unreliable). */
-      let removeOk = false;
-      let removeErr = '';
+      /* 3. Build selection of removable items + ripple-remove them.
+       *    No Phase 2 needed — ripple=true makes Premiere shift everything
+       *    after each removed item to fill the gap automatically. */
+      let removeOk = false, removeErr = '';
       project.lockedAccess(() => {
         try {
           const editor = ppro.SequenceEditor.getEditor(seq);
           if (!editor) throw new Error('SequenceEditor.getEditor returned null');
-          /* getSelection is async; we already entered locked block, so resolve
-           * synchronously via .then() is not possible. Trick: getSelection
-           * inside lockedAccess returns immediately because state is frozen. */
-          /* Actually getSelection() returns a Promise. Hack: iterate items
-           * we already collected, build via createEmptySelection which IS
-           * documented to work for items we addItem manually. */
+
           let sel;
           ppro.TrackItemSelection.createEmptySelection(s => { sel = s; });
-          if (!sel) throw new Error('createEmptySelection callback returned no selection');
-          for (const it of allItems) sel.addItem(it.item, false);
+          if (!sel) throw new Error('createEmptySelection returned no selection');
+          for (const it of removableItems) sel.addItem(it.item, false);
 
           const removeAct = editor.createRemoveItemsAction(sel, true, MTYPE_VIDEO);
           if (!removeAct) throw new Error('createRemoveItemsAction returned null');
           removeOk = project.executeTransaction(c => c.addAction(removeAct),
-                       `Filler Remover — clear timeline`);
+                       `Filler Remover — ripple delete ${removableItems.length} items`);
         } catch (e) { removeErr = e.message || String(e); }
       });
-      if (!removeOk) throw new Error(`Phase 1 (remove items) failed: ${removeErr || 'transaction refused'}`);
-      setProgress(65);
+      if (!removeOk) throw new Error(`Ripple-delete failed: ${removeErr || 'transaction refused'}`);
 
-      /* ── PHASE 2: INSERT keep segments, one per locked transaction ──────
-       *    Action creation INSIDE the lockedAccess callback (Adobe pattern).
-       *    Per-segment isolation lets one failure NOT block others. */
-      let inserted = 0, failures = [];
-      for (let i = 0; i < uniqueKeeps.length; i++) {
-        const k = uniqueKeeps[i];
-        let segOk = false, segErr = '';
-        project.lockedAccess(() => {
-          try {
-            const editor = ppro.SequenceEditor.getEditor(seq);
-            const inT    = ppro.TickTime.createWithSeconds(k.mediaIn);
-            const outT   = ppro.TickTime.createWithSeconds(k.mediaOut);
-            const startT = ppro.TickTime.createWithSeconds(k.newStart);
-
-            const setIO = (k.clipProjectItem && typeof k.clipProjectItem.createSetInOutPointsAction === 'function')
-                         ? k.clipProjectItem.createSetInOutPointsAction(inT, outT) : null;
-            const piForOverwrite = k.clipProjectItem || k.projectItem;
-            const ow    = editor.createOverwriteItemAction(piForOverwrite, startT, 0, 0);
-            if (!ow) throw new Error('createOverwriteItemAction returned null');
-
-            segOk = project.executeTransaction(c => {
-              if (setIO) c.addAction(setIO);
-              c.addAction(ow);
-            }, `Filler Remover — segment ${i + 1}/${uniqueKeeps.length}`);
-          } catch (e) { segErr = e.message || String(e); }
-        });
-        if (segOk) inserted++;
-        else       failures.push(`#${i + 1} @ ${k.newStart.toFixed(2)}s: ${segErr || 'transaction refused'}`);
-        setProgress(65 + 33 * ((i + 1) / uniqueKeeps.length));
+      /* If there are remaining unsplittable cuts (cuts inside surviving clips),
+       * we still place markers for those so the user can do them manually. */
+      if (unsplittableCount > 0) {
+        const markersForUnsplit = await ppro.Markers.getMarkers(seq);
+        if (markersForUnsplit) {
+          project.lockedAccess(() => {
+            project.executeTransaction(c => {
+              raw.forEach((cut, idx) => {
+                /* Only mark cuts that we couldn't fully ripple-delete */
+                let wasRemoved = false;
+                for (const it of removableItems) {
+                  if (cut.start >= it.segStart - 0.01 && cut.end <= it.segEnd + 0.01) {
+                    wasRemoved = true; break;
+                  }
+                }
+                if (!wasRemoved) {
+                  const start    = makeTime(ppro, cut.start);
+                  const duration = makeTime(ppro, Math.max(cut.end - cut.start, 0.04));
+                  const label    = `CUT ${idx + 1}/${total} — ${cut.reason || 'filler'}`;
+                  const action   = markersForUnsplit.createAddMarkerAction(label, 'Comment', start, duration, '');
+                  if (action) c.addAction(action);
+                }
+              });
+            }, 'Filler Remover — markers for unsplittable cuts');
+          });
+        }
       }
-
-      if (inserted === 0) {
-        throw new Error(
-          `Phase 2 inserted 0/${uniqueKeeps.length} segments.\n` +
-          `Sample errors:\n${failures.slice(0, 5).join('\n')}` +
-          (failures.length > 5 ? `\n…and ${failures.length - 5} more` : '')
-        );
-      }
-      if (failures.length) console.warn(`[FillerRemover] partial: ${inserted}/${uniqueKeeps.length}`, failures);
       setProgress(100);
 
     } catch (cutErr) {
@@ -1260,20 +1216,24 @@ applyBtn.addEventListener('click', async () => {
 
     /* ── Success messaging ── */
     if (mode === 'cuts') {
-      setStatus(`✓ ${total} cuts applied — timeline trimmed`, 'ok');
+      setStatus(`✓ Timeline trimmed`, 'ok');
       applyStatus.innerHTML = '';
-      applyStatus.appendChild(badge(`✓ ${total} cut${total !== 1 ? 's' : ''} applied to timeline — Ctrl+Z to undo all at once`, 'ok'));
+      applyStatus.appendChild(badge(`✓ Timeline trimmed — Ctrl+Z to undo`, 'ok'));
       const hint = document.createElement('div');
       hint.style.cssText = 'font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5';
       hint.innerHTML =
-        '<b>Done.</b> Timeline has been trimmed in place.<br>' +
-        '• Single Ctrl+Z undoes all cuts<br>' +
-        '• Continue editing in Premiere normally';
+        '<b>Done.</b> Whole-clip cuts ripple-deleted.<br>' +
+        '• Single Ctrl+Z undoes all cuts at once<br>' +
+        '• Any cuts that landed INSIDE a clip became markers — see timeline';
       applyStatus.appendChild(hint);
     } else {
-      setStatus(`✓ ${total} cut markers added (fallback mode)`, 'ok');
+      setStatus(`✓ ${total} cut markers added`, 'ok');
       applyStatus.innerHTML = '';
-      applyStatus.appendChild(badge(`⚠ ${total} marker${total !== 1 ? 's' : ''} added — auto-cut fell back`, 'warn'));
+      applyStatus.appendChild(badge(`✓ ${total} cut marker${total !== 1 ? 's' : ''} placed on timeline`, 'ok'));
+      const why = document.createElement('div');
+      why.style.cssText = 'font-size:10px;color:var(--dim);margin-top:4px;font-style:italic';
+      why.textContent = 'Premiere UXP has no razor API to split clips at arbitrary times — markers are the safe path.';
+      applyStatus.appendChild(why);
 
       /* Show why real-cut failed so the user can paste it back to fix v1.0.4 */
       if (realCutErrorMsg) {
