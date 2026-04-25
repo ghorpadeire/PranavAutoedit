@@ -28,7 +28,7 @@ from ai_review import (
 )
 
 
-def run(transcript_path: str, claude_api_key: str) -> dict:
+def run(transcript_path: str, claude_api_key: str, gap_threshold: float | None = None) -> dict:
     """
     Execute the full filler-removal pipeline.
 
@@ -53,8 +53,8 @@ def run(transcript_path: str, claude_api_key: str) -> dict:
     # Step 1 — Read transcript
     words = load_words(transcript_path)
 
-    # Step 2 — Rule-based detection
-    candidates = detect_removals(words)
+    # Step 2 — Rule-based detection (gap_threshold overrides config when provided)
+    candidates = detect_removals(words, gap_threshold=gap_threshold)
     merged     = merge_overlaps(candidates)
 
     # Step 3 — AI review

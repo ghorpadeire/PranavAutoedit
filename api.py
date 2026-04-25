@@ -27,7 +27,9 @@ import os
 import tempfile
 import time
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
+from typing import Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, UploadFile
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -97,12 +99,83 @@ def health() -> dict:
     }
 
 
+@app.post('/v1/read-transcript', tags=['Utility'])
+async def read_transcript(
+    request: Request,
+    _key: str = Depends(require_api_key),
+) -> dict:
+    """
+    Read a transcript JSON file from the **local** filesystem by path.
+
+    Intended for the Premiere Pro UXP plugin running on the same machine as the
+    local backend.  The UXP sandbox blocks direct file access (no working
+    localFileSystem API in Premiere Pro 2026), so the plugin delegates file I/O
+    to this endpoint.
+
+    **Not suitable for cloud deployments** — the backend cannot reach the
+    client's filesystem over the internet.
+
+    Body: ``{"path": "F:\\\\Project\\\\transcript.json"}``
+
+    Returns::
+
+        {
+          "content":   "<raw JSON string>",   # pass directly to /v1/analyze-raw
+          "word_count": 699,
+          "segments":   12
+        }
+
+    Security constraints (enforced server-side):
+    - Path must end with ``.json``
+    - Path must not contain ``..`` (no directory traversal)
+    - Requires valid ``X-API-Key`` header
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Request body must be JSON")
+
+    path: str = (body.get('path') or '').strip()
+    if not path:
+        raise HTTPException(status_code=422, detail="Missing 'path' in request body")
+    if '..' in path:
+        raise HTTPException(status_code=422, detail="Path must not contain '..'")
+    if not path.lower().endswith('.json'):
+        raise HTTPException(status_code=422, detail="Path must end with .json")
+
+    try:
+        with open(path, encoding='utf-8') as fh:
+            content = fh.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail=f"Permission denied: {path}")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot read file: {exc}")
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="File is not valid JSON")
+
+    if 'segments' not in data:
+        raise HTTPException(status_code=422, detail="JSON missing required key 'segments'")
+
+    word_count = sum(len(seg.get('words', [])) for seg in data['segments'])
+    log.info(f"read_transcript path={path!r} words={word_count}")
+    return {
+        'content':    content,
+        'word_count': word_count,
+        'segments':   len(data['segments']),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Shared validation + pipeline execution
 # (used by both /v1/analyze and /v1/analyze-raw)
 # ---------------------------------------------------------------------------
 
-async def _run_pipeline(content: bytes, claude_key: str) -> dict:
+async def _run_pipeline(content: bytes, claude_key: str, gap_threshold: Optional[float] = None) -> dict:
     """
     Validate *content*, write to a temp file, run the pipeline, clean up.
     Raises HTTPException on any error — never leaks temp files.
@@ -131,7 +204,7 @@ async def _run_pipeline(content: bytes, claude_key: str) -> dict:
 
     t0 = time.time()
     try:
-        result = pipeline.run(tmp.name, claude_api_key=claude_key)
+        result = pipeline.run(tmp.name, claude_api_key=claude_key, gap_threshold=gap_threshold)
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="Internal error: temp file missing")
     except ValueError as exc:
@@ -166,6 +239,10 @@ async def analyze(
         description="Your personal Anthropic API key (sk-ant-...). "
                     "Used for this request only — never stored."),
     _key: str = Depends(require_api_key),
+    gap_threshold: Optional[float] = Query(
+        default=None, ge=0.1, le=5.0,
+        description="Seconds of silence to flag as a long gap (overrides server default 0.8 s).",
+    ),
 ) -> dict:
     """
     Analyze a Premiere Pro transcript JSON and return filler cut ranges.
@@ -173,12 +250,13 @@ async def analyze(
     - **file**: Premiere transcript JSON (multipart upload)
     - **X-Claude-Key**: Your Anthropic API key
     - **X-API-Key**: Product key
+    - **gap_threshold**: Optional silence threshold override (0.1–5.0 s)
 
     Returns confirmed cuts (`final`), uncertain cuts (`flagged`), and stats.
     The call blocks ~5–15 s while the AI reviews candidate cuts.
     """
     content = await file.read()
-    return await _run_pipeline(content, x_claude_key)
+    return await _run_pipeline(content, x_claude_key, gap_threshold=gap_threshold)
 
 
 @app.post('/v1/analyze-raw', tags=['Pipeline'])
@@ -189,6 +267,10 @@ async def analyze_raw(
         description="Your personal Anthropic API key (sk-ant-...). "
                     "Used for this request only — never stored."),
     _key: str = Depends(require_api_key),
+    gap_threshold: Optional[float] = Query(
+        default=None, ge=0.1, le=5.0,
+        description="Seconds of silence to flag as a long gap (overrides server default 0.8 s).",
+    ),
 ) -> dict:
     """
     Same as `/v1/analyze` but accepts a **raw JSON body** instead of multipart.
@@ -198,6 +280,7 @@ async def analyze_raw(
     - **Body**: Premiere transcript JSON (Content-Type: application/json)
     - **X-Claude-Key**: Your Anthropic API key
     - **X-API-Key**: Product key
+    - **gap_threshold**: Optional silence threshold override (0.1–5.0 s)
     """
     content = await request.body()
-    return await _run_pipeline(content, x_claude_key)
+    return await _run_pipeline(content, x_claude_key, gap_threshold=gap_threshold)

@@ -4,383 +4,687 @@
   <meta charset="utf-8" />
   <title>Filler Remover</title>
   <style>
-    /* ── Design tokens (matches Premiere Pro dark theme) ── */
+    /* ── Design tokens ─────────────────────────── */
     :root {
-      --bg:        #2b2b2b;
-      --surface:   #383838;
-      --deep:      #1e1e1e;
-      --text:      #e0e0e0;
-      --dim:       #999;
-      --accent:    #4a9eff;
-      --success:   #5cb85c;
-      --warn:      #f0ad4e;
-      --error:     #d9534f;
-      --border:    #4a4a4a;
-      --radius:    4px;
+      --bg:      #1a1a1a;
+      --surface: #252525;
+      --raised:  #303030;
+      --border:  #3a3a3a;
+      --text:    #e0e0e0;
+      --dim:     #888;
+      --accent:  #5b8dee;
+      --success: #4caf50;
+      --warn:    #f0ad4e;
+      --error:   #e05252;
+      --r:       4px;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
+    /* ── 3-zone shell ───────────────────────────── */
     body {
-      font-family: 'Adobe Clean', 'Source Sans Pro', Arial, sans-serif;
+      font-family: 'Adobe Clean', 'Segoe UI', Arial, sans-serif;
       font-size: 12px;
       color: var(--text);
       background: var(--bg);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ZONE 1 — Header (fixed top) */
+    .hdr {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .hdr-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      flex: 1;
+    }
+    .hdr-sub {
+      font-size: 10px;
+      color: var(--dim);
+      margin-top: 1px;
+    }
+
+    /* ZONE 2 — Preview (scrollable middle) */
+    .preview {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
       padding: 10px;
       display: flex;
       flex-direction: column;
       gap: 8px;
     }
+    .preview::-webkit-scrollbar { width: 4px; }
+    .preview::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-    /* ── Section card ── */
-    section {
+    /* ZONE 3 — Controls (fixed bottom) */
+    .ctrl {
+      flex-shrink: 0;
+      border-top: 1px solid var(--border);
       background: var(--surface);
-      border-radius: var(--radius);
-      padding: 10px;
+      padding: 10px 12px;
       display: flex;
       flex-direction: column;
-      gap: 7px;
+      gap: 8px;
     }
 
-    h3 {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.09em;
-      color: var(--dim);
-    }
+    /* ── Common ─────────────────────────────────── */
+    .divider { height: 1px; background: var(--border); margin: 0 -2px; }
 
-    label { font-size: 11px; color: var(--dim); }
-
-    /* ── Inputs ── */
-    input[type="password"],
     input[type="text"],
+    input[type="password"],
     input[type="url"] {
       width: 100%;
-      padding: 6px 8px;
-      background: var(--deep);
+      padding: 5px 8px;
+      background: var(--bg);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
+      border-radius: var(--r);
       color: var(--text);
-      font-size: 12px;
+      font-size: 11px;
       outline: none;
+      font-family: inherit;
     }
     input:focus { border-color: var(--accent); }
 
-    /* ── Buttons ── */
+    small { font-size: 10px; color: var(--dim); line-height: 1.5; }
+
+    /* Buttons */
     button {
-      padding: 7px 12px;
-      border-radius: var(--radius);
+      padding: 6px 11px;
+      border-radius: var(--r);
       border: none;
-      font-size: 12px;
+      font-size: 11px;
+      font-family: inherit;
       cursor: pointer;
-      transition: opacity 0.12s;
+      font-weight: 600;
+      transition: opacity 0.12s, background 0.12s;
       outline: none;
     }
-    button:hover:not(:disabled) { opacity: 0.85; }
-    button:disabled { opacity: 0.38; cursor: not-allowed; }
+    button:hover:not(:disabled) { opacity: 0.82; }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
 
-    .btn-primary   { background: var(--accent); color: #fff; width: 100%; font-weight: 600; }
-    .btn-secondary { background: var(--deep); border: 1px solid var(--border); color: var(--text); width: 100%; }
-    .btn-sm        { padding: 4px 9px; font-size: 11px; width: auto; }
+    .btn-primary { background: var(--accent);  color: #fff; }
+    .btn-success { background: var(--success); color: #fff; width: 100%; font-size: 12px; padding: 7px; }
+    .btn-ghost   { background: var(--raised);  border: 1px solid var(--border); color: var(--text); }
+    .btn-row     { display: flex; gap: 5px; }
+    .btn-row > button { flex: 1; }
 
-    /* ── Layout helpers ── */
-    .row { display: flex; gap: 6px; align-items: center; }
-    .row input { flex: 1; }
-
-    /* ── Status chips ── */
-    .success { color: var(--success); font-size: 11px; }
-    .error   { color: var(--error);   font-size: 11px; }
-    .dim     { color: var(--dim);     font-size: 11px; }
-
-    .tag {
-      display: inline-block;
-      font-size: 10px;
-      padding: 1px 5px;
-      border-radius: 3px;
-      background: var(--border);
-      color: var(--dim);
+    /* Badges */
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10px; padding: 2px 6px; border-radius: 3px; font-weight: 600;
     }
-    .tag-warn { background: #5a3d00; color: var(--warn); }
+    .ok    { background: #152315; color: var(--success); }
+    .err   { background: #2e1515; color: var(--error);   }
+    .info  { background: #152030; color: var(--accent);  }
+    .warn  { background: #2e2000; color: var(--warn);    }
 
-    /* ── File label ── */
-    #fileLabel { font-size: 11px; font-style: italic; color: var(--dim); }
-    #fileLabel.ok { font-style: normal; color: var(--text); }
+    /* Row with label + right-aligned value */
+    .row { display: flex; align-items: center; gap: 6px; }
+    .row > *:first-child { flex: 1; }
 
-    /* ── Spinner ── */
-    #spinner { display: none; font-size: 11px; color: var(--dim); }
-    #spinner.on { display: block; }
-
-    /* ── Results ── */
-    #resultsSection { display: none; }
-
-    #stats {
-      font-size: 11px;
-      color: var(--dim);
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      line-height: 1.8;
+    /* ── ZONE 1 specifics ───────────────────────── */
+    .hdr-status { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--dim); }
+    .status-dot {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--dim); flex-shrink: 0;
     }
-    #stats b { color: var(--text); }
-
-    #cutsList {
-      max-height: 280px;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
+    .status-dot.ok   { background: var(--success); }
+    .status-dot.busy { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+    .status-dot.err  { background: var(--error); }
+    @keyframes pulse {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.35; transform: scale(0.6); }
     }
 
-    .cut {
-      background: var(--deep);
-      border-left: 3px solid var(--accent);
-      padding: 4px 8px;
-      border-radius: 0 3px 3px 0;
-      font-size: 11px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .cut.flagged { border-left-color: var(--warn); }
-    .cut .ts { color: var(--dim); }
+    /* ── ZONE 2 specifics ───────────────────────── */
 
-    /* ── Advanced accordion ── */
+    /* Empty state */
+    .empty-state {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 6px;
+      color: var(--dim); font-size: 11px; text-align: center;
+      padding: 20px; min-height: 100px;
+    }
+    .empty-icon { font-size: 28px; opacity: 0.4; }
+
+    /* Section label */
+    .sec-label {
+      font-size: 9px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--dim);
+    }
+
+    /* Stats */
+    .stats-grid {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px;
+    }
+    .stat-box {
+      background: var(--raised); border: 1px solid var(--border);
+      border-radius: var(--r); padding: 6px 8px; text-align: center;
+    }
+    .stat-box .sv { font-size: 17px; font-weight: 700; line-height: 1.2; }
+    .stat-box .sl { font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
+
+    /* Filter pills */
+    .filter-row { display: flex; gap: 4px; flex-wrap: wrap; }
+    .fp {
+      padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border);
+      background: var(--raised); font-size: 10px; cursor: pointer; color: var(--dim);
+      transition: all 0.12s;
+    }
+    .fp:hover { border-color: var(--accent); color: var(--text); }
+    .fp.on { border-color: var(--accent); background: rgba(91,141,238,0.12); color: var(--accent); }
+    .fp.on.r { border-color: var(--warn); background: rgba(240,173,78,0.10); color: var(--warn); }
+
+    /* List header (select-all controls) */
+    .list-hdr {
+      display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--dim);
+    }
+    .list-hdr button { padding: 1px 7px; font-size: 10px; font-weight: 500; }
+    .sel-count { margin-left: auto; }
+
+    /* Cut items */
+    #cutsList { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; }
+
+    .cut-item {
+      display: flex; align-items: flex-start; gap: 9px;
+      background: var(--raised); border-left: 3px solid var(--accent);
+      border-radius: 0 var(--r) var(--r) 0; padding: 7px 10px;
+      transition: background 0.15s;
+    }
+    .cut-item:hover { background: #353535; }
+    .cut-item.review { border-left-color: var(--warn); opacity: 0.92; }
+    .cut-item.hidden { display: none !important; }
+
+    .cut-check {
+      margin-top: 3px; cursor: pointer;
+      accent-color: var(--accent);
+      width: 14px; height: 14px; flex-shrink: 0;
+    }
+    .cut-item.review .cut-check { accent-color: var(--warn); }
+
+    .cut-body  { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .cut-hdr   { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .cut-icon  { font-size: 13px; line-height: 1; flex-shrink: 0; }
+    .cut-ts    {
+      font-family: 'Consolas', 'Menlo', monospace;
+      font-size: 12px; font-weight: 700; color: var(--text);
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .cut-arrow { color: var(--dim); font-size: 11px; flex-shrink: 0; }
+    .cut-dur   {
+      font-size: 10px; color: var(--dim); flex-shrink: 0;
+      background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 3px;
+    }
+    .cut-spacer { flex: 1; }
+    .pill      {
+      font-size: 9px; padding: 2px 6px; border-radius: 10px;
+      font-weight: 700; letter-spacing: 0.04em; flex-shrink: 0;
+    }
+    .p-remove  { background: rgba(91,141,238,0.18); color: var(--accent); }
+    .p-review  { background: rgba(240,173,78,0.18);  color: var(--warn);  }
+    .cut-conf  { font-size: 10px; color: var(--dim); flex-shrink: 0; font-weight: 600; }
+    .cut-detail {
+      font-size: 11px; color: #b0b0b0; line-height: 1.4;
+      word-break: break-word;
+    }
+    .cut-quote {
+      font-style: italic; color: var(--text);
+      background: rgba(91,141,238,0.08);
+      padding: 1px 5px; border-radius: 3px;
+      display: inline-block; margin-right: 4px;
+    }
+
+    /* ── ZONE 3 specifics ───────────────────────── */
+
+    /* Transcript row */
+    .xrow { display: flex; gap: 5px; align-items: center; }
+    .xrow input { flex: 1; }
+
+    /* Slider */
+    input[type=range] {
+      flex: 1; height: 3px; accent-color: var(--accent); cursor: pointer;
+    }
+    .slider-row { display: flex; align-items: center; gap: 7px; }
+    .slider-val { font-size: 11px; color: var(--accent); font-weight: 700; min-width: 30px; text-align: right; }
+
+    /* Filter toggles (checkboxes) in controls */
+    .toggle-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .toggle-row label {
+      display: flex; align-items: center; gap: 4px;
+      font-size: 10px; color: var(--dim); cursor: pointer;
+    }
+    .toggle-row input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
+
+    /* Progress bar */
+    .progress-track {
+      height: 3px; background: var(--border); border-radius: 2px; overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%; width: 0%; background: var(--accent);
+      transition: width 0.3s ease; border-radius: 2px;
+    }
+
+    /* Backup gate */
+    .backup-label {
+      display: flex; align-items: center; gap: 7px;
+      font-size: 11px; cursor: pointer; color: var(--dim);
+    }
+    .backup-label input[type=checkbox] {
+      width: 13px; height: 13px; cursor: pointer; accent-color: var(--success);
+    }
+    .backup-label.ready { color: var(--text); }
+
+    /* Settings (collapsible) */
     details summary {
-      cursor: pointer;
-      font-size: 11px;
-      color: var(--dim);
-      user-select: none;
-      list-style: none;
-      padding: 2px 0;
+      cursor: pointer; font-size: 10px; color: var(--dim);
+      user-select: none; list-style: none;
     }
     details summary::before { content: '▸ '; }
     details[open] summary::before { content: '▾ '; }
-    details[open] summary { margin-bottom: 6px; }
-
-    .adv-grid { display: flex; flex-direction: column; gap: 6px; }
+    .settings-grid { display: flex; flex-direction: column; gap: 6px; margin-top: 7px; }
+    .settings-grid label { font-size: 10px; color: var(--dim); }
+    .key-row { display: flex; gap: 5px; }
+    .key-row input { flex: 1; }
   </style>
 </head>
 
 <body>
 
-  <!-- ── 1. API Key ─────────────────────────────────── -->
-  <section>
-    <h3>🔑 Anthropic API Key</h3>
-    <label>Your personal key — stored securely on this machine, never sent anywhere else</label>
-    <div class="row">
-      <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off" />
-      <button class="btn-secondary btn-sm" id="saveKeyBtn">Save</button>
+<!-- ═══════════════════════════════════════════ -->
+<!--  ZONE 1 — Header                           -->
+<!-- ═══════════════════════════════════════════ -->
+<div class="hdr">
+  <div style="flex:1">
+    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.5</span></div>
+    <div class="hdr-status">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Ready — load a transcript to start</span>
     </div>
-    <div id="keyStatus" class="dim"></div>
-  </section>
+  </div>
+  <button class="btn-primary" id="analyzeBtn" disabled>▶ Analyze</button>
+</div>
 
-  <!-- ── 2. Get Transcript ──────────────────────────── -->
-  <section>
-    <h3>📄 Transcript</h3>
-    <label>
-      Export from Premiere: <em>File → Export → Transcript…</em>
-      then click below to select the .json file
-    </label>
-    <button class="btn-secondary" id="browseBtn">📂 Get Transcript from Premiere…</button>
-    <div id="fileLabel">No file selected</div>
-  </section>
+<!-- ═══════════════════════════════════════════ -->
+<!--  ZONE 2 — Preview (scrollable)             -->
+<!-- ═══════════════════════════════════════════ -->
+<div class="preview" id="preview">
 
-  <!-- ── 3. Analyze ────────────────────────────────── -->
-  <section>
-    <button class="btn-primary" id="analyzeBtn" disabled>▶&nbsp; Analyze Fillers</button>
-    <div id="spinner" class="">⏳&nbsp; Analyzing… please wait (~10–15 s)</div>
-    <div id="analyzeError" class="error" style="display:none"></div>
-  </section>
+  <!-- Empty state -->
+  <div class="empty-state" id="emptyState">
+    <div class="empty-icon">✂</div>
+    <div>Paste your transcript path below<br>then click <b>▶ Analyze</b></div>
+  </div>
 
-  <!-- ── 4. Results ────────────────────────────────── -->
-  <section id="resultsSection">
-    <h3>📊 Results</h3>
-    <div id="stats"></div>
+  <!-- Results (hidden until analysis) -->
+  <div id="resultsArea" style="display:none; flex-direction:column; gap:8px;">
+
+    <!-- Stats -->
+    <div class="stats-grid" id="statsGrid"></div>
+
+    <!-- Filter pills -->
+    <div class="filter-row" id="filterRow"></div>
+
+    <!-- Select controls + count -->
+    <div class="list-hdr">
+      <button class="btn-ghost" id="selectAllBtn">All</button>
+      <button class="btn-ghost" id="selectNoneBtn">None</button>
+      <span class="sel-count" id="selCount"></span>
+    </div>
+
+    <!-- Cut list -->
     <div id="cutsList"></div>
-    <div style="display:flex; gap:6px; margin-top:4px">
-      <button class="btn-secondary btn-sm" id="copyFinalBtn">📋 Copy cuts JSON</button>
-      <button class="btn-secondary btn-sm" id="copyAllBtn">📋 Copy full report</button>
+
+    <!-- Copy -->
+    <div class="btn-row">
+      <button class="btn-ghost" id="copyFinalBtn">📋 Cuts JSON</button>
+      <button class="btn-ghost" id="copyAllBtn">📋 Full report</button>
     </div>
-  </section>
 
-  <!-- ── 5. Advanced settings ──────────────────────── -->
-  <section>
-    <details>
-      <summary>Advanced settings</summary>
-      <div class="adv-grid">
-        <label>Backend URL  <span class="tag">change when using cloud</span></label>
-        <input type="url" id="backendUrl" value="http://localhost:8000" />
-        <label>Product Key  <span class="tag">leave as devkey for local</span></label>
-        <input type="text" id="productKey" value="devkey" autocomplete="off" />
-        <div class="row">
-          <button class="btn-secondary btn-sm" id="saveAdvBtn">Save</button>
-          <span id="advStatus" class="dim"></span>
-        </div>
+  </div>
+
+  <!-- Analyze error -->
+  <div id="analyzeError"></div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<!--  ZONE 3 — Controls (fixed bottom)          -->
+<!-- ═══════════════════════════════════════════ -->
+<div class="ctrl">
+
+  <!-- Transcript path -->
+  <div>
+    <div class="sec-label" style="margin-bottom:5px">Transcript file</div>
+    <div class="xrow">
+      <input type="text" id="transcriptPath" placeholder="F:\Project\transcript.json" autocomplete="off" />
+      <button class="btn-ghost" id="loadBtn">Load</button>
+    </div>
+    <div id="fileStatus" style="margin-top:4px"></div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Silence threshold slider -->
+  <div>
+    <div class="row" style="margin-bottom:4px">
+      <span class="sec-label">Silence threshold</span>
+      <span class="slider-val" id="gapVal">0.8 s</span>
+    </div>
+    <div class="slider-row">
+      <span style="font-size:10px;color:var(--dim)">0.3</span>
+      <input type="range" id="gapSlider" min="0.3" max="2.0" step="0.1" value="0.8" />
+      <span style="font-size:10px;color:var(--dim)">2.0 s</span>
+    </div>
+  </div>
+
+  <!-- Filter toggles -->
+  <div class="toggle-row">
+    <label><input type="checkbox" id="tFillers"    checked> Fillers</label>
+    <label><input type="checkbox" id="tSilence"    checked> Silence</label>
+    <label><input type="checkbox" id="tFalseStart" checked> False starts</label>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Backup confirm -->
+  <label class="backup-label" id="backupLabel">
+    <input type="checkbox" id="backupConfirm" />
+    Duplicated my sequence — ready to apply
+  </label>
+
+  <!-- Apply button -->
+  <button class="btn-success" id="applyBtn" disabled>✂ Apply Cuts to Timeline</button>
+
+  <!-- Progress bar -->
+  <div class="progress-track">
+    <div class="progress-fill" id="progressFill"></div>
+  </div>
+  <div id="applyStatus" style="display:none"></div>
+
+  <!-- ⚙ Settings (collapsed by default) -->
+  <details>
+    <summary>Settings (API key, backend URL)</summary>
+    <div class="settings-grid">
+      <label>Anthropic API Key</label>
+      <div class="key-row">
+        <input type="password" id="apiKey" placeholder="sk-ant-api03-…" autocomplete="off" />
+        <button class="btn-ghost" id="saveKeyBtn">Save</button>
       </div>
-    </details>
-  </section>
+      <div id="keyStatus"></div>
+      <label>Backend URL</label>
+      <input type="url" id="backendUrl" value="http://localhost:8000" />
+      <label>Product Key</label>
+      <input type="text" id="productKey" value="devkey" autocomplete="off" />
+      <div class="btn-row">
+        <button class="btn-ghost" id="saveAdvBtn">Save settings</button>
+        <span id="advStatus" style="font-size:10px;color:var(--dim)"></span>
+      </div>
+    </div>
+  </details>
 
-<!-- ═══════════════════════════════════════════════════ -->
+</div><!-- /ctrl -->
+
 <script>
 'use strict';
 
-/* ── UXP APIs ─────────────────────────────────────── */
+/* ── UXP ─────────────────────────────────────── */
 const uxp         = require('uxp');
-const fs          = uxp.storage.localFileSystem;
 const secureStore = uxp.storage.secureStorage;
-const formats     = uxp.storage.formats;
+const lfs         = uxp.storage.localFileSystem;
 
-/* ── State ────────────────────────────────────────── */
-let transcriptText = null;   // raw JSON string of selected file
-let lastResult     = null;   // most recent API response
+/* ── State ───────────────────────────────────── */
+let transcriptText  = null;
+let lastResult      = null;
+let allCuts         = [];        // enriched cut objects
+let selectedIdx     = new Set(); // indices into allCuts that are checked
+let filterState     = { fillers: true, silence: true, false_start: true, review: true };
 
-/* ── DOM refs ─────────────────────────────────────── */
-const $  = id => document.getElementById(id);
-const apiKeyEl       = $('apiKey');
-const saveKeyBtn     = $('saveKeyBtn');
-const keyStatus      = $('keyStatus');
-const browseBtn      = $('browseBtn');
-const fileLabel      = $('fileLabel');
+/* ── Confidence map ──────────────────────────── */
+const CONF = { disfluency: 97, text_filler: 93, long_gap: 82, false_start: 78 };
+const conf  = r => CONF[r] || 75;
+const catOf = c => c.reason === 'long_gap' ? 'silence'
+                 : c.reason === 'false_start' ? 'false_start'
+                 : 'fillers';
+
+/* ── DOM refs ────────────────────────────────── */
+const $         = id => document.getElementById(id);
+const statusDot = $('statusDot');
+const statusTxt = $('statusText');
 const analyzeBtn     = $('analyzeBtn');
-const spinner        = $('spinner');
-const analyzeError   = $('analyzeError');
-const resultsSection = $('resultsSection');
-const statsEl        = $('stats');
+const preview        = $('preview');
+const emptyState     = $('emptyState');
+const resultsArea    = $('resultsArea');
+const statsGrid      = $('statsGrid');
+const filterRow      = $('filterRow');
+const selCountEl     = $('selCount');
+const selectAllBtn   = $('selectAllBtn');
+const selectNoneBtn  = $('selectNoneBtn');
 const cutsListEl     = $('cutsList');
 const copyFinalBtn   = $('copyFinalBtn');
 const copyAllBtn     = $('copyAllBtn');
+const analyzeError   = $('analyzeError');
+const transcriptPath = $('transcriptPath');
+const loadBtn        = $('loadBtn');
+const fileStatus     = $('fileStatus');
+const gapSlider      = $('gapSlider');
+const gapVal         = $('gapVal');
+const tFillers       = $('tFillers');
+const tSilence       = $('tSilence');
+const tFalseStart    = $('tFalseStart');
+const backupLabel    = $('backupLabel');
+const backupConfirm  = $('backupConfirm');
+const applyBtn       = $('applyBtn');
+const progressFill   = $('progressFill');
+const applyStatus    = $('applyStatus');
+const apiKeyEl       = $('apiKey');
+const saveKeyBtn     = $('saveKeyBtn');
+const keyStatus      = $('keyStatus');
 const backendUrlEl   = $('backendUrl');
 const productKeyEl   = $('productKey');
 const saveAdvBtn     = $('saveAdvBtn');
 const advStatus      = $('advStatus');
 
-/* ── Secure storage helpers ───────────────────────── */
+/* ── Status helpers ──────────────────────────── */
+function setStatus(text, mode /* ok | busy | err | '' */) {
+  statusTxt.textContent = text;
+  statusDot.className   = 'status-dot' + (mode ? ' ' + mode : '');
+}
+
+function badge(text, cls) {
+  const el = document.createElement('div');
+  el.className = 'badge ' + cls;
+  el.textContent = text;
+  return el;
+}
+function setEl(el, text, cls) {
+  el.innerHTML = '';
+  el.appendChild(badge(text, cls));
+}
+
+function setProgress(pct) {
+  progressFill.style.width = Math.min(100, Math.max(0, pct)) + '%';
+}
+
+function fmt(sec) {
+  const m = Math.floor(sec / 60);
+  const s = (sec % 60).toFixed(1).padStart(4, '0');
+  return `${m}:${s}`;
+}
+
+/* ── Secure storage helpers ──────────────────── */
 async function secureGet(key) {
   try {
-    const val = await secureStore.getItem(key);
-    if (!val) return '';
-    if (typeof val === 'string') return val;
-    return new TextDecoder().decode(val);   // UXP returns Uint8Array in some versions
+    const v = await secureStore.getItem(key);
+    if (!v) return '';
+    return typeof v === 'string' ? v : new TextDecoder().decode(v);
   } catch { return ''; }
 }
-
-async function secureSet(key, value) {
-  await secureStore.setItem(key, value);
+async function secureSet(key, val) {
+  try { await secureStore.setItem(key, val); } catch {}
 }
 
-/* ── Format seconds → m:ss.s or h:mm:ss.s ────────── */
-function fmt(sec) {
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = (sec % 60).toFixed(1).padStart(4, '0');
-  return h > 0
-    ? `${h}:${String(m).padStart(2, '0')}:${s}`
-    : `${m}:${s}`;
-}
-
-/* ── Enable Analyze only when key + file both present ── */
+/* ── Refresh analyze-button enabled state ────── */
 function refreshReady() {
-  const hasKey  = apiKeyEl.value.trim().startsWith('sk-');
+  const hasKey  = (apiKeyEl.value || '').trim().startsWith('sk-');
   const hasFile = transcriptText !== null;
   analyzeBtn.disabled = !(hasKey && hasFile);
+  if (hasKey && hasFile) setStatus('Ready — click ▶ Analyze', 'ok');
 }
 
-/* ── On startup: restore all saved values ─────────── */
+/* ── Startup — restore saved values ─────────── */
 (async () => {
-  const [savedKey, savedUrl, savedProd] = await Promise.all([
+  const [key, url, prod, path, gap] = await Promise.all([
     secureGet('CLAUDE_API_KEY'),
     secureGet('BACKEND_URL'),
     secureGet('PRODUCT_KEY'),
+    secureGet('TRANSCRIPT_PATH'),
+    secureGet('GAP_THRESHOLD'),
   ]);
-  if (savedKey)  { apiKeyEl.value     = savedKey;  keyStatus.textContent = '✓ Key loaded'; }
-  if (savedUrl)  { backendUrlEl.value = savedUrl; }
-  if (savedProd) { productKeyEl.value = savedProd; }
+  if (key)  { apiKeyEl.value     = key; setEl(keyStatus, '✓ Key loaded', 'ok'); }
+  if (url)  { backendUrlEl.value = url; }
+  if (prod) { productKeyEl.value = prod; }
+  if (path) { transcriptPath.value = path; }
+  if (gap)  { gapSlider.value = gap; gapVal.textContent = parseFloat(gap).toFixed(1) + ' s'; }
   refreshReady();
 })();
 
-/* ── Save API key ─────────────────────────────────── */
+/* ── API Key ─────────────────────────────────── */
 saveKeyBtn.addEventListener('click', async () => {
-  const key = apiKeyEl.value.trim();
-  if (!key.startsWith('sk-')) {
-    keyStatus.textContent = '✗ Key must start with sk-';
-    keyStatus.className = 'error';
-    return;
-  }
+  const key = (apiKeyEl.value || '').trim();
+  if (!key.startsWith('sk-')) { setEl(keyStatus, '✗ Must start with sk-', 'err'); return; }
   await secureSet('CLAUDE_API_KEY', key);
-  keyStatus.textContent = '✓ Saved securely';
-  keyStatus.className = 'success';
+  setEl(keyStatus, '✓ Saved securely', 'ok');
   refreshReady();
 });
+apiKeyEl.addEventListener('input', () => { keyStatus.innerHTML = ''; refreshReady(); });
 
-apiKeyEl.addEventListener('input', () => {
-  keyStatus.textContent = '';
-  refreshReady();
-});
+/* ── File loading via backend proxy ─────────── */
+/*
+ * Premiere Pro 2026 UXP blocks all direct file access:
+ *   lfs.getEntryForUrl → not a function
+ *   fetch('file://')   → network request failed (sandboxed)
+ *
+ * Workaround: delegate file reading to the local backend via the new
+ * POST /v1/read-transcript endpoint.  The backend (same machine) can
+ * open the file normally and return its contents.
+ */
+loadBtn.addEventListener('click', async () => {
+  const pathVal    = (transcriptPath.value || '').trim();
+  const backendUrl = (backendUrlEl.value  || '').trim().replace(/\/+$/, '');
+  const productKey = (productKeyEl.value  || '').trim();
 
-/* ── Browse for transcript file ───────────────────── */
-browseBtn.addEventListener('click', async () => {
-  browseBtn.disabled = true;
+  if (!pathVal) { setEl(fileStatus, '✗ Paste the full file path first', 'err'); return; }
+
+  loadBtn.disabled = true;
+  setEl(fileStatus, '⏳ Reading via backend…', 'info');
+
   try {
-    const file = await fs.getFileForOpening({
-      allowMultiple: false,
-      types: ['json'],
+    const res = await fetch(`${backendUrl}/v1/read-transcript`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': productKey },
+      body:    JSON.stringify({ path: pathVal }),
     });
 
-    if (!file) { browseBtn.disabled = false; return; }  // user cancelled
-
-    const content = await file.read({ format: formats.utf8 });
-
-    /* Quick schema validation before accepting */
-    let parsed;
-    try { parsed = JSON.parse(content); }
-    catch {
-      fileLabel.textContent = '✗ Not valid JSON — wrong file?';
-      fileLabel.className = 'error';
-      transcriptText = null;
-      refreshReady();
-      return;
-    }
-    if (!parsed.segments) {
-      fileLabel.textContent = '✗ Missing "segments" key — export the transcript first';
-      fileLabel.className = 'error';
-      transcriptText = null;
-      refreshReady();
-      return;
+    if (res.status === 401) throw new Error('Invalid product key — check Settings');
+    if (res.status === 404) throw new Error('File not found — double-check the path');
+    if (res.status === 403) throw new Error('Permission denied — check file permissions');
+    if (!res.ok) {
+      let detail = `Backend error ${res.status}`;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(detail);
     }
 
-    transcriptText = content;
-    fileLabel.textContent = '✓  ' + file.name
-      + '  (' + parsed.segments.length + ' segments)';
-    fileLabel.className = 'ok';
-    resultsSection.style.display = 'none';
-    analyzeError.style.display = 'none';
-    lastResult = null;
+    const data     = await res.json();
+    transcriptText = data.content;
+
+    const name = pathVal.split(/[\\/]/).pop();
+    setEl(fileStatus, `✓ ${name}  (${data.word_count} words)`, 'ok');
+    await secureSet('TRANSCRIPT_PATH', pathVal);
+
+    /* Reset results view */
+    resultsArea.style.display = 'none';
+    emptyState.style.display  = '';
+    analyzeError.innerHTML    = '';
+    lastResult = null; allCuts = []; selectedIdx.clear();
+    backupConfirm.checked = false;
+    setProgress(0);
     refreshReady();
 
   } catch (err) {
-    fileLabel.textContent = '✗ Could not open file: ' + err.message;
-    fileLabel.className = 'error';
+    const isNetErr = err.message.toLowerCase().includes('failed to fetch')
+                  || err.message.toLowerCase().includes('network');
+    setEl(fileStatus,
+      '✗ ' + (isNetErr ? 'Cannot reach backend — is uvicorn running?' : err.message),
+      'err');
+    transcriptText = null; refreshReady();
   } finally {
-    browseBtn.disabled = false;
+    loadBtn.disabled = false;
   }
 });
 
-/* ── Analyze ──────────────────────────────────────── */
-analyzeBtn.addEventListener('click', async () => {
-  const claudeKey  = apiKeyEl.value.trim();
-  const backendUrl = backendUrlEl.value.trim().replace(/\/+$/, '');
-  const productKey = productKeyEl.value.trim();
+/* ── Network helpers ─────────────────────────── */
+function httpErr(status, detail) {
+  if (status === 429) return 'Rate limited — wait ~60 s then retry';
+  if (status === 401) return 'Invalid product key — check Settings';
+  if (status === 413) return 'Transcript too large (max 50 MB)';
+  if (status === 422) return 'Invalid transcript — re-export from Premiere';
+  if (status === 502) return `AI error: ${detail}`;
+  return `Server error ${status}: ${detail}`;
+}
 
-  /* Loading state */
-  analyzeBtn.disabled       = true;
-  spinner.className         = 'on';
-  analyzeError.style.display = 'none';
-  resultsSection.style.display = 'none';
+async function fetchWithRetry(url, opts, retries = 1) {
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60000);
+  try {
+    const res = await fetch(url, { ...opts, signal: ctrl.signal });
+    clearTimeout(timer);
+    return res;
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === 'AbortError')
+      throw new Error('Server took too long (>60 s) — is the backend running?');
+    if (retries > 0) {
+      await new Promise(r => setTimeout(r, 2000));
+      return fetchWithRetry(url, opts, retries - 1);
+    }
+    throw new Error('Cannot reach server — check backend URL in Settings');
+  }
+}
+
+/* ── Analyze ─────────────────────────────────── */
+async function doAnalyze() {
+  const claudeKey  = (apiKeyEl.value || '').trim();
+  const backendUrl = (backendUrlEl.value || '').trim().replace(/\/+$/, '');
+  const productKey = (productKeyEl.value || '').trim();
+  const gapThresh  = parseFloat(gapSlider.value).toFixed(1);
+
+  analyzeBtn.disabled = true;
+  analyzeError.innerHTML = '';
+  resultsArea.style.display = 'none';
+  emptyState.style.display  = 'none';
+  setProgress(15);
+  setStatus('Sending transcript…', 'busy');
+
+  const stepTimer = setTimeout(() => {
+    setStatus('AI reviewing candidates… (~15–20 s)', 'busy');
+    setProgress(40);
+  }, 3000);
 
   try {
-    const response = await fetch(`${backendUrl}/v1/analyze-raw`, {
-      method: 'POST',
+    const url = `${backendUrl}/v1/analyze-raw?gap_threshold=${gapThresh}`;
+    const res  = await fetchWithRetry(url, {
+      method:  'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-API-Key':    productKey,
@@ -389,103 +693,633 @@ analyzeBtn.addEventListener('click', async () => {
       body: transcriptText,
     });
 
-    if (!response.ok) {
-      let detail = response.statusText;
-      try { detail = (await response.json()).detail || detail; } catch { /* ignore */ }
-      throw new Error(`${response.status}: ${detail}`);
+    let detail = res.statusText;
+    if (!res.ok) {
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(httpErr(res.status, detail));
     }
 
-    const result = await response.json();
+    setProgress(85);
+    const result = await res.json();
     lastResult = result;
+    setProgress(100);
     renderResults(result);
-    resultsSection.style.display = '';
+    setStatus(`Done — ${result.final_count} cuts confirmed`, 'ok');
 
   } catch (err) {
-    analyzeError.textContent   = '✗ ' + err.message;
-    analyzeError.style.display = '';
+    setProgress(0);
+    setStatus('Analysis failed', 'err');
+    emptyState.style.display = '';
+    analyzeError.innerHTML = '';
+    analyzeError.appendChild(badge('✗ ' + err.message, 'err'));
+    const rb = document.createElement('button');
+    rb.className = 'btn-ghost';
+    rb.textContent = '🔄 Retry';
+    rb.style.cssText = 'margin-top:8px;width:100%';
+    rb.addEventListener('click', doAnalyze);
+    analyzeError.appendChild(rb);
   } finally {
-    spinner.className   = '';
+    clearTimeout(stepTimer);
     analyzeBtn.disabled = false;
     refreshReady();
   }
+}
+
+analyzeBtn.addEventListener('click', doAnalyze);
+
+/* ── Render results ──────────────────────────── */
+function renderResults(r) {
+  /* Stats */
+  statsGrid.innerHTML = '';
+  [
+    { v: r.final_count + r.flagged_count, l: 'Total cuts',   hi: true  },
+    { v: r.final_count,                   l: 'Auto-remove',  hi: false },
+    { v: r.flagged_count,                 l: 'Review',       hi: false },
+  ].forEach(s => {
+    const b = document.createElement('div');
+    b.className = 'stat-box';
+    b.innerHTML = `<div class="sv" style="${s.hi ? 'color:var(--accent)' : ''}">${s.v}</div>
+                   <div class="sl">${s.l}</div>`;
+    statsGrid.appendChild(b);
+  });
+
+  /* Build flat cuts array */
+  allCuts = [
+    ...r.final.map(c  => ({ ...c, _v: 'remove', _cat: catOf(c) })),
+    ...(r.flagged || []).map(c => ({ ...c, _v: 'review', _cat: catOf(c) })),
+  ].sort((a, b) => a.start - b.start);
+
+  /* Default: REMOVE selected, REVIEW not */
+  selectedIdx.clear();
+  allCuts.forEach((c, i) => { if (c._v === 'remove') selectedIdx.add(i); });
+
+  /* Filter pills */
+  filterRow.innerHTML = '';
+  [
+    { key: 'fillers',      label: 'Fillers'      },
+    { key: 'silence',      label: 'Silence'      },
+    { key: 'false_start',  label: 'False starts' },
+    { key: 'review',       label: 'Review',       rev: true },
+  ].forEach(({ key, label, rev }) => {
+    const btn = document.createElement('button');
+    btn.className = 'fp on' + (rev ? ' r' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      filterState[key] = !filterState[key];
+      btn.classList.toggle('on', filterState[key]);
+      applyListFilters();
+    });
+    filterRow.appendChild(btn);
+  });
+
+  /* Cut items */
+  cutsListEl.innerHTML = '';
+  if (!allCuts.length) {
+    cutsListEl.innerHTML = '<div style="font-size:11px;color:var(--dim);padding:6px 0">No cuts found — transcript is clean 🎉</div>';
+  } else {
+    /* Icon + readable label per cut category */
+    const iconFor = r => ({
+      disfluency:  '⏸',
+      text_filler: '🗣',
+      long_gap:    '🔇',
+      false_start: '🔁',
+    }[r] || '✂');
+    const labelFor = r => ({
+      disfluency:  'Disfluency',
+      text_filler: 'Filler word',
+      long_gap:    'Long pause',
+      false_start: 'False start',
+    }[r] || (r ? r.replace(/_/g, ' ') : 'Cut'));
+    const escapeHtml = s => String(s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+
+    allCuts.forEach((cut, i) => {
+      const isRev    = cut._v === 'review';
+      const aiReason = (cut.ai_reason || '').trim();
+      const baseLabel = labelFor(cut.reason);
+      const dur      = Math.max(0, cut.end - cut.start);
+
+      /* Build human-readable detail line */
+      let detail = '';
+      if (cut.word) {
+        detail += `<span class="cut-quote">"${escapeHtml(cut.word)}"</span>`;
+      } else if (cut.text) {
+        const t = cut.text.length > 70 ? cut.text.slice(0, 67) + '…' : cut.text;
+        detail += `<span class="cut-quote">"${escapeHtml(t)}"</span>`;
+      } else if (cut.gap_seconds) {
+        detail += `<span class="cut-quote">${cut.gap_seconds}s of silence</span>`;
+      }
+      detail += `<span style="color:var(--dim)">${escapeHtml(baseLabel)}</span>`;
+      if (aiReason) detail += `<span style="color:var(--dim)"> — ${escapeHtml(aiReason)}</span>`;
+
+      const div    = document.createElement('div');
+      div.className    = 'cut-item' + (isRev ? ' review' : '');
+      div.dataset.idx  = i;
+      div.innerHTML = `
+        <input type="checkbox" class="cut-check" data-idx="${i}" ${!isRev ? 'checked' : ''}>
+        <div class="cut-body">
+          <div class="cut-hdr">
+            <span class="cut-icon" title="${escapeHtml(baseLabel)}">${iconFor(cut.reason)}</span>
+            <span class="cut-ts">${fmt(cut.start)}</span>
+            <span class="cut-arrow">→</span>
+            <span class="cut-ts">${fmt(cut.end)}</span>
+            <span class="cut-dur">${dur.toFixed(2)}s</span>
+            <span class="cut-spacer"></span>
+            <span class="pill ${isRev ? 'p-review' : 'p-remove'}">${isRev ? 'REVIEW' : 'REMOVE'}</span>
+            <span class="cut-conf">${conf(cut.reason)}%</span>
+          </div>
+          <div class="cut-detail">${detail}</div>
+        </div>`;
+      cutsListEl.appendChild(div);
+    });
+  }
+
+  /* Apply filter toggles from control checkboxes */
+  filterState.fillers     = tFillers.checked;
+  filterState.silence     = tSilence.checked;
+  filterState.false_start = tFalseStart.checked;
+  filterState.review      = true;
+
+  applyListFilters();
+  updateApplyBtn();
+
+  /* Show results */
+  emptyState.style.display    = 'none';
+  resultsArea.style.display   = 'flex';
+  backupConfirm.checked = false;
+}
+
+/* ── Filter visibility ───────────────────────── */
+function applyListFilters() {
+  cutsListEl.querySelectorAll('.cut-item').forEach(el => {
+    const i   = parseInt(el.dataset.idx);
+    const c   = allCuts[i];
+    const vis = filterState[c._cat] && (c._v !== 'review' || filterState.review);
+    el.classList.toggle('hidden', !vis);
+  });
+  updateApplyBtn();
+}
+
+/* Control-bar toggles → reapply */
+[tFillers, tSilence, tFalseStart].forEach(cb => {
+  cb.addEventListener('change', () => {
+    filterState.fillers     = tFillers.checked;
+    filterState.silence     = tSilence.checked;
+    filterState.false_start = tFalseStart.checked;
+    applyListFilters();
+    /* Keep filter pills in sync */
+    const pills = filterRow.querySelectorAll('.fp');
+    if (pills[0]) pills[0].classList.toggle('on', filterState.fillers);
+    if (pills[1]) pills[1].classList.toggle('on', filterState.silence);
+    if (pills[2]) pills[2].classList.toggle('on', filterState.false_start);
+  });
 });
 
-/* ── Render results list ──────────────────────────── */
-function renderResults(r) {
-  statsEl.innerHTML = `
-    Words: <b>${r.word_count.toLocaleString()}</b>
-    &nbsp;Candidates: <b>${r.candidate_count}</b>
-    &nbsp;Cuts: <b>${r.final_count}</b>
-    &nbsp;Kept: <b>${r.keep_count}</b>
-    &nbsp;Flagged: <b>${r.flagged_count}</b>
-    &nbsp;Time: <b>${r.elapsed}s</b>
-  `;
+/* ── Update apply button ─────────────────────── */
+function updateApplyBtn() {
+  const count    = selectedIdx.size;
+  const hasReady = backupConfirm.checked && count > 0;
+  applyBtn.disabled    = !hasReady;
+  applyBtn.textContent = count > 0
+    ? `✂  Apply ${count} Cut${count !== 1 ? 's' : ''} to Timeline`
+    : '✂  Apply Cuts to Timeline';
+  selCountEl.textContent = `${count} of ${allCuts.length} selected`;
+  backupLabel.className  = 'backup-label' + (count > 0 ? ' ready' : '');
+}
 
-  cutsListEl.innerHTML = '';
+/* ── Checkbox event delegation ───────────────── */
+cutsListEl.addEventListener('change', e => {
+  if (!e.target.matches('.cut-check')) return;
+  const idx = parseInt(e.target.dataset.idx);
+  if (e.target.checked) selectedIdx.add(idx);
+  else selectedIdx.delete(idx);
+  updateApplyBtn();
+});
 
-  if (!r.final_count && !r.flagged_count) {
-    cutsListEl.innerHTML = '<div class="dim" style="padding:6px 0">No cuts found — transcript looks clean 🎉</div>';
+/* ── Select all / none ───────────────────────── */
+selectAllBtn.addEventListener('click', () => {
+  cutsListEl.querySelectorAll('.cut-item:not(.hidden) .cut-check').forEach(cb => {
+    cb.checked = true;
+    selectedIdx.add(parseInt(cb.dataset.idx));
+  });
+  updateApplyBtn();
+});
+selectNoneBtn.addEventListener('click', () => {
+  cutsListEl.querySelectorAll('.cut-check').forEach(cb => {
+    cb.checked = false;
+    selectedIdx.delete(parseInt(cb.dataset.idx));
+  });
+  updateApplyBtn();
+});
+
+/* ── Backup confirm ──────────────────────────── */
+backupConfirm.addEventListener('change', updateApplyBtn);
+
+/* ── Copy helpers ────────────────────────────── */
+async function copyText(text, btn, label) {
+  try { await navigator.clipboard.writeText(text); btn.textContent = '✓ Copied!'; }
+  catch { btn.textContent = '✗ Failed'; }
+  setTimeout(() => { btn.textContent = label; }, 2000);
+}
+copyFinalBtn.addEventListener('click', () => {
+  if (lastResult) copyText(JSON.stringify(lastResult.final, null, 2), copyFinalBtn, '📋 Cuts JSON');
+});
+copyAllBtn.addEventListener('click', () => {
+  if (lastResult) copyText(JSON.stringify(lastResult, null, 2), copyAllBtn, '📋 Full report');
+});
+
+/* ── Apply Cuts ──────────────────────────────── */
+
+/*
+ * Premiere Pro UXP API changed across versions.  This function resolves
+ * the active sequence regardless of API version:
+ *
+ *  v22–25:  ppro.app.getActiveSequence()
+ *  v26+:    ppro.app.getActiveProject() → project.getActiveSequence()
+ *            OR ppro.sequence (flat module)
+ *
+ * We try all known patterns and surface a clear diagnostic if none work.
+ */
+async function resolveActiveSequence(ppro) {
+  /* --- CANONICAL Premiere Pro 25+/26+ API (per official TypeScript types):
+   *     ppro.Project.getActiveProject() → project.getActiveSequence()
+   *
+   * Source: AdobeDocs/uxp-premiere-pro types.d.ts:
+   *   ProjectStatic.getActiveProject(): Promise<Project>
+   *   Project.getActiveSequence(): Promise<Sequence>
+   * --- */
+  if (ppro.Project && typeof ppro.Project.getActiveProject === 'function') {
+    const proj = await ppro.Project.getActiveProject();
+    if (!proj) {
+      throw new Error('No project is open. Open a Premiere project first.');
+    }
+    if (typeof proj.getActiveSequence !== 'function') {
+      const projMethods = Object.getOwnPropertyNames(Object.getPrototypeOf(proj) || proj).join(', ');
+      throw new Error(`Project loaded but getActiveSequence missing.\nProject methods: ${projMethods}`);
+    }
+    const seq = await proj.getActiveSequence();
+    if (!seq) {
+      throw new Error(
+        'A project is open but no sequence is active.\n' +
+        'Drag a clip into the timeline (or double-click a sequence in the Project panel), then try again.'
+      );
+    }
+    return seq;
+  }
+
+  /* --- Legacy fallback for older Premiere versions (v22–24) --- */
+  if (ppro.app && typeof ppro.app.getActiveSequence === 'function') {
+    const seq = await ppro.app.getActiveSequence();
+    if (seq) return seq;
+  }
+  if (ppro.app && typeof ppro.app.getActiveProject === 'function') {
+    const proj = await ppro.app.getActiveProject();
+    if (proj && typeof proj.getActiveSequence === 'function') {
+      const seq = await proj.getActiveSequence();
+      if (seq) return seq;
+    }
+  }
+
+  /* --- Diagnostic: show what the module actually exposes --- */
+  const topKeys  = Object.getOwnPropertyNames(ppro).join(', ') || '(none)';
+  const appKeys  = ppro.app ? Object.getOwnPropertyNames(ppro.app).join(', ') : 'ppro.app is undefined';
+  const projKeys = ppro.Project ? Object.getOwnPropertyNames(ppro.Project).join(', ') : 'ppro.Project undefined';
+  throw new Error(
+    `Cannot find active sequence.\n` +
+    `ppro keys: ${topKeys}\n` +
+    `ppro.app keys: ${appKeys}\n` +
+    `ppro.Project keys: ${projKeys}\n` +
+    `Open a sequence in the Premiere timeline, then try again.`
+  );
+}
+
+/*
+ * Create a TickTime from seconds.
+ * Premiere Pro 25+/26+ canonical API per Adobe TypeScript types:
+ *   ppro.TickTime.createWithSeconds(seconds): TickTime
+ */
+function makeTime(ppro, seconds) {
+  if (ppro.TickTime && typeof ppro.TickTime.createWithSeconds === 'function') {
+    return ppro.TickTime.createWithSeconds(seconds);
+  }
+  /* Legacy fallback (Premiere v22-24) */
+  if (ppro.Time) {
+    try { const t = new ppro.Time(); t.seconds = seconds; return t; } catch {}
+    if (typeof ppro.Time.fromSeconds === 'function')
+      return ppro.Time.fromSeconds(seconds);
+  }
+  throw new Error(
+    `Cannot create Time object.\n` +
+    `Expected ppro.TickTime.createWithSeconds (Premiere 25+) or ppro.Time (Premiere 22-24).\n` +
+    `Found: ppro.TickTime=${typeof ppro.TickTime}, ppro.Time=${typeof ppro.Time}`
+  );
+}
+
+applyBtn.addEventListener('click', async () => {
+  if (!selectedIdx.size) return;
+
+  let ppro;
+  try { ppro = require('premierepro'); }
+  catch {
+    applyStatus.innerHTML = '';
+    applyStatus.appendChild(badge('✗ Premiere Pro API unavailable', 'err'));
+    applyStatus.style.display = '';
     return;
   }
 
-  const allCuts = [
-    ...r.final.map(c   => ({ ...c, _type: 'remove'  })),
-    ...r.flagged.map(c => ({ ...c, _type: 'flagged' })),
-  ].sort((a, b) => a.start - b.start);
+  applyBtn.disabled     = true;
+  backupConfirm.checked = false;   /* prevent double-apply */
+  applyStatus.style.display = 'none';
+  setProgress(10);
+  setStatus('Connecting to Premiere…', 'busy');
 
-  for (const cut of allCuts) {
-    const div = document.createElement('div');
-    div.className = cut._type === 'flagged' ? 'cut flagged' : 'cut';
-    const reasonText = cut.ai_reason || cut.reason || '';
-    div.innerHTML = `
-      <span class="ts">${fmt(cut.start)} → ${fmt(cut.end)}</span>
-      <span>
-        ${cut._type === 'flagged'
-          ? '<span class="tag tag-warn">review</span> '
-          : ''}
-        <span class="tag">${reasonText}</span>
-      </span>
-    `;
-    cutsListEl.appendChild(div);
-  }
-}
-
-/* ── Copy helpers ─────────────────────────────────── */
-async function copyText(text, btn, label) {
-  if (!lastResult) return;
   try {
-    await navigator.clipboard.writeText(text);
-    btn.textContent = '✓ Copied!';
-  } catch {
-    btn.textContent = '✗ Failed';
+    const seq = await resolveActiveSequence(ppro);
+    const project = await ppro.Project.getActiveProject();
+
+    /* Selected cuts, sorted ascending and merged so overlapping ranges collapse */
+    const raw = [...selectedIdx].map(i => allCuts[i]).filter(Boolean)
+                .sort((a, b) => a.start - b.start);
+    const cutRanges = [];
+    for (const c of raw) {
+      const last = cutRanges[cutRanges.length - 1];
+      if (last && c.start <= last.end + 0.001) {
+        last.end = Math.max(last.end, c.end);
+      } else {
+        cutRanges.push({ start: c.start, end: c.end });
+      }
+    }
+    const total = raw.length;
+    if (!total) throw new Error('No cuts selected.');
+
+    /* ── Try REAL CUTS via remove + overwrite (Premiere 25+ canonical workaround
+     *    for the missing razor API).  If anything goes wrong, we fall back to
+     *    marker-mode so the user is never left with a broken timeline. ── */
+    let mode = 'cuts';
+    let realCutErrorMsg = '';   /* surfaced in the marker-fallback UI */
+    try {
+      setStatus(`Cutting timeline (${cutRanges.length} ranges)…`, 'busy');
+      setProgress(20);
+
+      /* 1. Collect every CLIP track item across all V/A tracks */
+      const vCount = await seq.getVideoTrackCount();
+      const aCount = await seq.getAudioTrackCount();
+      const allItems = [];   // {item, trackIdx, mediaType, segStart, segEnd, mediaIn, projectItem}
+
+      const collect = async (track, trackIdx, mediaType) => {
+        if (!track || typeof track.getTrackItems !== 'function') return;
+        const items = track.getTrackItems(1, false); // CLIP=1, includeEmpty=false
+        for (const item of items) {
+          const segStart = (await item.getStartTime()).seconds;
+          const segEnd   = (await item.getEndTime()).seconds;
+          const mediaIn  = (await item.getInPoint()).seconds;
+          const projectItem = await item.getProjectItem();
+          allItems.push({ item, trackIdx, mediaType, segStart, segEnd, mediaIn, projectItem });
+        }
+      };
+      for (let i = 0; i < vCount; i++) await collect(await seq.getVideoTrack(i), i, 'video');
+      for (let i = 0; i < aCount; i++) await collect(await seq.getAudioTrack(i), i, 'audio');
+
+      if (!allItems.length) throw new Error('No clips found on the active sequence.');
+      setProgress(40);
+
+      /* 2. For each item, compute keep-segments (parts NOT inside any cut) */
+      const keeps = []; // {trackIdx, mediaType, oldStart, mediaIn, mediaOut, projectItem, dur}
+      for (const it of allItems) {
+        let parts = [{ s: it.segStart, e: it.segEnd, mOff: 0 }];
+        for (const cut of cutRanges) {
+          const next = [];
+          for (const p of parts) {
+            if (cut.end <= p.s || cut.start >= p.e)        next.push(p);
+            else if (cut.start <= p.s && cut.end >= p.e)    {/* fully removed */}
+            else if (cut.start <= p.s && cut.end <  p.e)    next.push({ s: cut.end, e: p.e,    mOff: p.mOff + (cut.end - p.s) });
+            else if (cut.start >  p.s && cut.end >= p.e)    next.push({ s: p.s,     e: cut.start, mOff: p.mOff });
+            else                                             { next.push({ s: p.s, e: cut.start, mOff: p.mOff });
+                                                              next.push({ s: cut.end, e: p.e,    mOff: p.mOff + (cut.end - p.s) }); }
+          }
+          parts = next;
+        }
+        for (const p of parts) {
+          if (p.e - p.s < 0.04) continue; // skip sub-frame slivers
+          keeps.push({
+            trackIdx: it.trackIdx, mediaType: it.mediaType,
+            oldStart: p.s, projectItem: it.projectItem,
+            mediaIn:  it.mediaIn + p.mOff,
+            mediaOut: it.mediaIn + p.mOff + (p.e - p.s),
+            dur: p.e - p.s,
+          });
+        }
+      }
+
+      /* 3. Compute rippled new positions: shift each keep left by total cut
+       *    duration that occurs before its old start time */
+      for (const k of keeps) {
+        let shift = 0;
+        for (const cut of cutRanges) {
+          if (cut.end <= k.oldStart) shift += (cut.end - cut.start);
+        }
+        k.newStart = k.oldStart - shift;
+      }
+      keeps.sort((a, b) => a.newStart - b.newStart);
+      setProgress(55);
+
+      /* 4. Build a TrackItemSelection containing every original item */
+      let selection;
+      ppro.TrackItemSelection.createEmptySelection(s => { selection = s; });
+      if (!selection) throw new Error('createEmptySelection returned no selection.');
+      for (const it of allItems) selection.addItem(it.item);
+
+      const editor = ppro.SequenceEditor.getEditor(seq);
+      if (!editor) throw new Error('SequenceEditor.getEditor returned null.');
+      const MEDIA_ANY = (ppro.Constants && ppro.Constants.MediaType && ppro.Constants.MediaType.ANY) || 0;
+      setProgress(70);
+
+      /* 5. Build all action objects FIRST (Adobe forum-confirmed pattern).
+       *    Action creation must happen BEFORE entering the locked transaction
+       *    so references stay valid; "script object is no longer valid" fires
+       *    when actions are built inside async callbacks. */
+      const removeAct = editor.createRemoveItemsAction(selection, false, MEDIA_ANY, false);
+      const keepActions = [];   // [{ setIO, ow }, ...]
+      for (const k of keeps) {
+        const inT    = ppro.TickTime.createWithSeconds(k.mediaIn);
+        const outT   = ppro.TickTime.createWithSeconds(k.mediaOut);
+        const startT = ppro.TickTime.createWithSeconds(k.newStart);
+        const setIO  = (k.projectItem && typeof k.projectItem.createSetInOutPointsAction === 'function')
+                      ? k.projectItem.createSetInOutPointsAction(inT, outT) : null;
+        const ow     = editor.createOverwriteItemAction(
+          k.projectItem, startT,
+          k.mediaType === 'video' ? k.trackIdx : -1,
+          k.mediaType === 'audio' ? k.trackIdx : -1,
+        );
+        keepActions.push({ setIO, ow });
+      }
+
+      /* 6. Wrap executeTransaction in lockedAccess — REQUIRED in Premiere 25+
+       *    or scripts fail with "the script object is no longer valid".
+       *    Confirmed pattern from Adobe forum + sample plugin. */
+      let ok = false;
+      project.lockedAccess(() => {
+        ok = project.executeTransaction(compound => {
+          if (removeAct) compound.addAction(removeAct);
+          for (const { setIO, ow } of keepActions) {
+            if (setIO) compound.addAction(setIO);
+            if (ow)    compound.addAction(ow);
+          }
+        }, `Filler Remover — remove ${cutRanges.length} ranges (${total} cuts)`);
+      });
+
+      if (!ok) throw new Error('Premiere refused the transaction (sequence may be read-only or referenced clip is offline).');
+      setProgress(100);
+
+    } catch (cutErr) {
+      /* ── Fallback: marker mode ── */
+      realCutErrorMsg = cutErr && cutErr.message ? cutErr.message : String(cutErr);
+      console.warn('[FillerRemover] real-cut failed, falling back to markers:', realCutErrorMsg);
+      mode = 'markers';
+      setStatus(`Real-cut unavailable — adding ${total} markers instead…`, 'busy');
+      setProgress(40);
+
+      if (!ppro.Markers || typeof ppro.Markers.getMarkers !== 'function')
+        throw new Error(`Both real-cut and marker fallback failed.\nReal-cut: ${cutErr.message}\nMarker: ppro.Markers.getMarkers missing`);
+      const markers = await ppro.Markers.getMarkers(seq);
+      if (!markers) throw new Error(`Real-cut failed AND marker fallback failed (no Markers collection).\nReal-cut: ${cutErr.message}`);
+
+      /* Pre-build marker actions (avoid script-object-invalid by capturing references first) */
+      const markerActions = raw.map((cut, idx) => {
+        const start    = makeTime(ppro, cut.start);
+        const duration = makeTime(ppro, Math.max(cut.end - cut.start, 0.04));
+        const label    = `CUT ${idx + 1}/${total} — ${cut.reason || 'filler'}`;
+        const comment  = `[${cut.start.toFixed(2)}s → ${cut.end.toFixed(2)}s]` +
+                         (cut.word ? ` "${cut.word}"` : '') +
+                         (cut.text ? ` "${cut.text.slice(0, 60)}"` : '');
+        return markers.createAddMarkerAction(label, 'Comment', start, duration, comment);
+      });
+
+      let ok2 = false;
+      project.lockedAccess(() => {
+        ok2 = project.executeTransaction(compound => {
+          for (const a of markerActions) if (a) compound.addAction(a);
+        }, `Filler Remover — add ${total} cut markers (fallback)`);
+      });
+      if (!ok2) throw new Error(`Marker fallback transaction refused. Real-cut error: ${cutErr.message}`);
+      setProgress(100);
+    }
+
+    /* ── Success messaging ── */
+    if (mode === 'cuts') {
+      setStatus(`✓ ${total} cuts applied — timeline trimmed`, 'ok');
+      applyStatus.innerHTML = '';
+      applyStatus.appendChild(badge(`✓ ${total} cut${total !== 1 ? 's' : ''} applied to timeline — Ctrl+Z to undo all at once`, 'ok'));
+      const hint = document.createElement('div');
+      hint.style.cssText = 'font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5';
+      hint.innerHTML =
+        '<b>Done.</b> Timeline has been trimmed in place.<br>' +
+        '• Single Ctrl+Z undoes all cuts<br>' +
+        '• Continue editing in Premiere normally';
+      applyStatus.appendChild(hint);
+    } else {
+      setStatus(`✓ ${total} cut markers added (fallback mode)`, 'ok');
+      applyStatus.innerHTML = '';
+      applyStatus.appendChild(badge(`⚠ ${total} marker${total !== 1 ? 's' : ''} added — auto-cut fell back`, 'warn'));
+
+      /* Show why real-cut failed so the user can paste it back to fix v1.0.4 */
+      if (realCutErrorMsg) {
+        const errBox = document.createElement('details');
+        errBox.style.cssText = 'margin-top:6px;font-size:10px;color:var(--dim)';
+        errBox.innerHTML =
+          '<summary style="cursor:pointer;color:var(--warn)">Why did auto-cut fail? (click to expand)</summary>' +
+          `<pre style="font-size:10px;white-space:pre-wrap;word-break:break-all;color:var(--error);margin-top:4px">${realCutErrorMsg.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</pre>`;
+        applyStatus.appendChild(errBox);
+      }
+
+      const hint = document.createElement('div');
+      hint.style.cssText = 'font-size:11px;color:var(--dim);margin-top:8px;line-height:1.5';
+      hint.innerHTML =
+        '<b>Two ways forward:</b><br>' +
+        '<b>A.</b> Click <b>Delete all markers</b> below to clean up, then send me the error above.<br>' +
+        '<b>B.</b> Manually ripple-delete each marker:<br>' +
+        '&nbsp;&nbsp;• <kbd>Shift+M</kbd> jumps to next marker<br>' +
+        '&nbsp;&nbsp;• <kbd>Q</kbd> / <kbd>W</kbd> set in/out at marker bounds<br>' +
+        '&nbsp;&nbsp;• <kbd>Shift+Delete</kbd> ripple-deletes the range';
+      applyStatus.appendChild(hint);
+
+      /* Cleanup button — removes every marker we just added in one transaction */
+      const cleanupBtn = document.createElement('button');
+      cleanupBtn.textContent = '🗑 Delete all Filler Remover markers';
+      cleanupBtn.style.cssText =
+        'margin-top:10px;width:100%;padding:8px;background:#3a2222;color:#e0a0a0;' +
+        'border:1px solid #5a3030;border-radius:4px;cursor:pointer;font-size:11px';
+      cleanupBtn.onmouseenter = () => cleanupBtn.style.background = '#4a2828';
+      cleanupBtn.onmouseleave = () => cleanupBtn.style.background = '#3a2222';
+      cleanupBtn.addEventListener('click', async () => {
+        cleanupBtn.disabled = true;
+        cleanupBtn.textContent = 'Deleting…';
+        try {
+          const ppro2 = require('premierepro');
+          const seq2  = await resolveActiveSequence(ppro2);
+          const proj2 = await ppro2.Project.getActiveProject();
+          const m2    = await ppro2.Markers.getMarkers(seq2);
+          const list  = m2.getMarkers ? m2.getMarkers() : [];
+          /* Pre-build remove actions (avoid script-object-invalid) */
+          const removeActions = [];
+          for (const mk of list) {
+            const nm = (mk && mk.name !== undefined) ? mk.name : '';
+            if (typeof nm === 'string' && nm.startsWith('CUT ')) {
+              const a = m2.createRemoveMarkerAction(mk);
+              if (a) removeActions.push(a);
+            }
+          }
+          const removed = removeActions.length;
+          let ok = false;
+          proj2.lockedAccess(() => {
+            ok = proj2.executeTransaction(compound => {
+              for (const a of removeActions) compound.addAction(a);
+            }, 'Filler Remover — delete cut markers');
+          });
+          cleanupBtn.textContent = ok
+            ? `✓ Removed ${removed} marker${removed !== 1 ? 's' : ''} (Ctrl+Z to restore)`
+            : '✗ Cleanup transaction refused';
+        } catch (e) {
+          cleanupBtn.textContent = '✗ ' + (e && e.message ? e.message.split('\n')[0] : 'cleanup failed');
+        }
+      });
+      applyStatus.appendChild(cleanupBtn);
+    }
+    applyStatus.style.display = '';
+    selectedIdx.clear();
+    updateApplyBtn();
+
+  } catch (err) {
+    setProgress(0);
+    setStatus('Apply failed', 'err');
+    applyStatus.innerHTML = '';
+    /* Show full error so user can copy the diagnostic */
+    const lines = err.message.split('\n');
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'font-size:10px;white-space:pre-wrap;word-break:break-all;margin-top:4px;color:var(--error)';
+    pre.textContent = err.message;
+    applyStatus.appendChild(badge('✗ ' + lines[0], 'err'));
+    applyStatus.appendChild(pre);
+    applyStatus.style.display = '';
+    console.error('[FillerRemover] Apply error:', err.message);
+    backupConfirm.checked = false;
+    updateApplyBtn();
   }
-  setTimeout(() => { btn.textContent = label; }, 2000);
-}
+});
 
-copyFinalBtn.addEventListener('click', () =>
-  copyText(
-    JSON.stringify(lastResult.final, null, 2),
-    copyFinalBtn,
-    '📋 Copy cuts JSON'
-  )
-);
-copyAllBtn.addEventListener('click', () =>
-  copyText(
-    JSON.stringify(lastResult, null, 2),
-    copyAllBtn,
-    '📋 Copy full report'
-  )
-);
+/* ── Gap slider ──────────────────────────────── */
+gapSlider.addEventListener('input', () => {
+  gapVal.textContent = parseFloat(gapSlider.value).toFixed(1) + ' s';
+});
 
-/* ── Save advanced settings ───────────────────────── */
+/* ── Save advanced settings ──────────────────── */
 saveAdvBtn.addEventListener('click', async () => {
   await Promise.all([
-    secureSet('BACKEND_URL', backendUrlEl.value.trim()),
-    secureSet('PRODUCT_KEY', productKeyEl.value.trim()),
+    secureSet('BACKEND_URL',   (backendUrlEl.value || '').trim()),
+    secureSet('PRODUCT_KEY',   (productKeyEl.value || '').trim()),
+    secureSet('GAP_THRESHOLD', parseFloat(gapSlider.value).toFixed(1)),
   ]);
   advStatus.textContent = '✓ Saved';
-  advStatus.className   = 'success';
-  setTimeout(() => { advStatus.textContent = ''; advStatus.className = 'dim'; }, 2000);
+  setTimeout(() => { advStatus.textContent = ''; }, 2000);
 });
 </script>
 </body>

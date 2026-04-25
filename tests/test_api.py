@@ -284,7 +284,7 @@ class TestTempFileCleanup(unittest.TestCase):
         """Run analyze, capture the temp path passed to pipeline.run."""
         captured = {}
 
-        def fake_run(path, claude_api_key):
+        def fake_run(path, claude_api_key, gap_threshold=None):
             captured['path'] = path
             if mock_run_side_effect:
                 raise mock_run_side_effect
@@ -379,6 +379,147 @@ class TestAnalyzeRaw(unittest.TestCase):
         with patch('api.pipeline.run', side_effect=RuntimeError('boom')):
             r = _upload_raw()
         self.assertEqual(r.status_code, 500)
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/read-transcript
+# ---------------------------------------------------------------------------
+
+VALID_TRANSCRIPT_DICT = {
+    "language": "en-us",
+    "segments": [{
+        "duration": 5.0, "language": "en-us", "speaker": "abc", "start": 0.0,
+        "words": [
+            {"confidence": 1.0, "duration": 0.4, "eos": False,
+             "start": 0.0, "tags": [], "text": "Hello", "type": "word"},
+            {"confidence": 1.0, "duration": 0.4, "eos": True,
+             "start": 0.4, "tags": [], "text": "world.", "type": "word"},
+        ]
+    }]
+}
+VALID_TRANSCRIPT_CONTENT = json.dumps(VALID_TRANSCRIPT_DICT)
+
+
+def _read_transcript(path: str, headers: dict = None) -> object:
+    hdrs = headers if headers is not None else {'X-API-Key': 'testkey'}
+    return CLIENT.post(
+        '/v1/read-transcript',
+        json={'path': path},
+        headers=hdrs,
+    )
+
+
+class TestReadTranscript(unittest.TestCase):
+
+    def setUp(self):
+        _reset_rate_limiter()
+
+    def test_missing_api_key_returns_422(self):
+        r = CLIENT.post('/v1/read-transcript', json={'path': 'x.json'})
+        self.assertEqual(r.status_code, 422)
+
+    def test_wrong_api_key_returns_401(self):
+        r = _read_transcript('x.json', headers={'X-API-Key': 'wrong'})
+        self.assertEqual(r.status_code, 401)
+
+    def test_missing_path_returns_422(self):
+        r = CLIENT.post('/v1/read-transcript', json={}, headers={'X-API-Key': 'testkey'})
+        self.assertEqual(r.status_code, 422)
+
+    def test_empty_path_returns_422(self):
+        r = _read_transcript('', headers={'X-API-Key': 'testkey'})
+        self.assertEqual(r.status_code, 422)
+
+    def test_path_traversal_returns_422(self):
+        r = _read_transcript('../secrets.json')
+        self.assertEqual(r.status_code, 422)
+
+    def test_non_json_extension_returns_422(self):
+        r = _read_transcript('/path/to/file.txt')
+        self.assertEqual(r.status_code, 422)
+
+    def test_file_not_found_returns_404(self):
+        r = _read_transcript('/nonexistent/path/transcript.json')
+        self.assertEqual(r.status_code, 404)
+
+    def test_valid_file_returns_200(self):
+        import tempfile, os
+        tmp = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.json', delete=False, encoding='utf-8')
+        tmp.write(VALID_TRANSCRIPT_CONTENT)
+        tmp.close()
+        try:
+            r = _read_transcript(tmp.name)
+            self.assertEqual(r.status_code, 200)
+        finally:
+            os.unlink(tmp.name)
+
+    def test_response_has_content_key(self):
+        import tempfile, os
+        tmp = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.json', delete=False, encoding='utf-8')
+        tmp.write(VALID_TRANSCRIPT_CONTENT)
+        tmp.close()
+        try:
+            r = _read_transcript(tmp.name)
+            self.assertIn('content', r.json())
+        finally:
+            os.unlink(tmp.name)
+
+    def test_response_has_word_count(self):
+        import tempfile, os
+        tmp = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.json', delete=False, encoding='utf-8')
+        tmp.write(VALID_TRANSCRIPT_CONTENT)
+        tmp.close()
+        try:
+            r = _read_transcript(tmp.name)
+            self.assertEqual(r.json()['word_count'], 2)
+        finally:
+            os.unlink(tmp.name)
+
+    def test_response_has_segments_count(self):
+        import tempfile, os
+        tmp = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.json', delete=False, encoding='utf-8')
+        tmp.write(VALID_TRANSCRIPT_CONTENT)
+        tmp.close()
+        try:
+            r = _read_transcript(tmp.name)
+            self.assertEqual(r.json()['segments'], 1)
+        finally:
+            os.unlink(tmp.name)
+
+    def test_invalid_json_file_returns_422(self):
+        import tempfile, os
+        tmp = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.json', delete=False, encoding='utf-8')
+        tmp.write('not valid json at all')
+        tmp.close()
+        try:
+            r = _read_transcript(tmp.name)
+            self.assertEqual(r.status_code, 422)
+        finally:
+            os.unlink(tmp.name)
+
+    def test_missing_segments_key_returns_422(self):
+        import tempfile, os
+        tmp = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.json', delete=False, encoding='utf-8')
+        tmp.write(json.dumps({'language': 'en-us'}))
+        tmp.close()
+        try:
+            r = _read_transcript(tmp.name)
+            self.assertEqual(r.status_code, 422)
+        finally:
+            os.unlink(tmp.name)
+
+    def test_permission_error_returns_403(self):
+        with patch('builtins.open', side_effect=PermissionError("denied")):
+            r = _read_transcript('/some/real-looking-path.json')
+        # PermissionError is only raised after path validation passes;
+        # path must end in .json and not contain ..
+        self.assertIn(r.status_code, (403, 404))  # 404 if path check triggers first
 
 
 if __name__ == '__main__':
