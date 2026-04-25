@@ -2,13 +2,13 @@
   "manifestVersion": 5,
   "id": "com.pranavautoedit.fillerremover",
   "name": "Filler Remover",
+  "shortname": "FillerRemover",
   "version": "1.0.0",
-  "host": [
-    {
-      "app": "PPRO",
-      "minVersion": "22.0.0"
-    }
-  ],
+  "main": "index.html",
+  "host": {
+    "app": "premierepro",
+    "minVersion": "25.1.0"
+  },
   "entrypoints": [
     {
       "type": "panel",
@@ -16,10 +16,10 @@
       "label": {
         "default": "Filler Remover"
       },
-      "main": "index.html",
       "minimumSize": { "width": 300, "height": 500 },
       "maximumSize": { "width": 800, "height": 2000 },
-      "preferredDockedSize": { "width": 350, "height": 620 }
+      "preferredDockedSize": { "width": 350, "height": 620 },
+      "preferredFloatingSize": { "width": 350, "height": 620 }
     }
   ],
   "requiredPermissions": {
@@ -32,6 +32,6 @@
       ]
     },
     "localFileSystem": "request",
-    "clipboard": "readwrite"
+    "clipboard": "readAndWrite"
   }
 }

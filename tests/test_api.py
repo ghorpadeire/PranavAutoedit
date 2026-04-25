@@ -284,7 +284,7 @@ class TestTempFileCleanup(unittest.TestCase):
         """Run analyze, capture the temp path passed to pipeline.run."""
         captured = {}
 
-        def fake_run(path, claude_api_key):
+        def fake_run(path, claude_api_key, gap_threshold=None):
             captured['path'] = path
             if mock_run_side_effect:
                 raise mock_run_side_effect

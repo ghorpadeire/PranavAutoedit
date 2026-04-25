@@ -27,7 +27,9 @@ import os
 import tempfile
 import time
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
+from typing import Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, UploadFile
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -102,7 +104,7 @@ def health() -> dict:
 # (used by both /v1/analyze and /v1/analyze-raw)
 # ---------------------------------------------------------------------------
 
-async def _run_pipeline(content: bytes, claude_key: str) -> dict:
+async def _run_pipeline(content: bytes, claude_key: str, gap_threshold: Optional[float] = None) -> dict:
     """
     Validate *content*, write to a temp file, run the pipeline, clean up.
     Raises HTTPException on any error — never leaks temp files.
@@ -131,7 +133,7 @@ async def _run_pipeline(content: bytes, claude_key: str) -> dict:
 
     t0 = time.time()
     try:
-        result = pipeline.run(tmp.name, claude_api_key=claude_key)
+        result = pipeline.run(tmp.name, claude_api_key=claude_key, gap_threshold=gap_threshold)
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="Internal error: temp file missing")
     except ValueError as exc:
@@ -166,6 +168,10 @@ async def analyze(
         description="Your personal Anthropic API key (sk-ant-...). "
                     "Used for this request only — never stored."),
     _key: str = Depends(require_api_key),
+    gap_threshold: Optional[float] = Query(
+        default=None, ge=0.1, le=5.0,
+        description="Seconds of silence to flag as a long gap (overrides server default 0.8 s).",
+    ),
 ) -> dict:
     """
     Analyze a Premiere Pro transcript JSON and return filler cut ranges.
@@ -173,12 +179,13 @@ async def analyze(
     - **file**: Premiere transcript JSON (multipart upload)
     - **X-Claude-Key**: Your Anthropic API key
     - **X-API-Key**: Product key
+    - **gap_threshold**: Optional silence threshold override (0.1–5.0 s)
 
     Returns confirmed cuts (`final`), uncertain cuts (`flagged`), and stats.
     The call blocks ~5–15 s while the AI reviews candidate cuts.
     """
     content = await file.read()
-    return await _run_pipeline(content, x_claude_key)
+    return await _run_pipeline(content, x_claude_key, gap_threshold=gap_threshold)
 
 
 @app.post('/v1/analyze-raw', tags=['Pipeline'])
@@ -189,6 +196,10 @@ async def analyze_raw(
         description="Your personal Anthropic API key (sk-ant-...). "
                     "Used for this request only — never stored."),
     _key: str = Depends(require_api_key),
+    gap_threshold: Optional[float] = Query(
+        default=None, ge=0.1, le=5.0,
+        description="Seconds of silence to flag as a long gap (overrides server default 0.8 s).",
+    ),
 ) -> dict:
     """
     Same as `/v1/analyze` but accepts a **raw JSON body** instead of multipart.
@@ -198,6 +209,7 @@ async def analyze_raw(
     - **Body**: Premiere transcript JSON (Content-Type: application/json)
     - **X-Claude-Key**: Your Anthropic API key
     - **X-API-Key**: Product key
+    - **gap_threshold**: Optional silence threshold override (0.1–5.0 s)
     """
     content = await request.body()
-    return await _run_pipeline(content, x_claude_key)
+    return await _run_pipeline(content, x_claude_key, gap_threshold=gap_threshold)
