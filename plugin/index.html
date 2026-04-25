@@ -284,7 +284,7 @@
 <!-- ═══════════════════════════════════════════ -->
 <div class="hdr">
   <div style="flex:1">
-    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.3</span></div>
+    <div class="hdr-title">Filler Remover <span style="font-size:9px;font-weight:400;color:#5b8dee;background:#1a2540;padding:1px 5px;border-radius:3px;margin-left:4px">v1.0.4</span></div>
     <div class="hdr-status">
       <div class="status-dot" id="statusDot"></div>
       <span id="statusText">Ready — load a transcript to start</span>
@@ -997,6 +997,7 @@ applyBtn.addEventListener('click', async () => {
      *    for the missing razor API).  If anything goes wrong, we fall back to
      *    marker-mode so the user is never left with a broken timeline. ── */
     let mode = 'cuts';
+    let realCutErrorMsg = '';   /* surfaced in the marker-fallback UI */
     try {
       setStatus(`Cutting timeline (${cutRanges.length} ranges)…`, 'busy');
       setProgress(20);
@@ -1103,7 +1104,8 @@ applyBtn.addEventListener('click', async () => {
 
     } catch (cutErr) {
       /* ── Fallback: marker mode ── */
-      console.warn('[FillerRemover] real-cut failed, falling back to markers:', cutErr.message);
+      realCutErrorMsg = cutErr && cutErr.message ? cutErr.message : String(cutErr);
+      console.warn('[FillerRemover] real-cut failed, falling back to markers:', realCutErrorMsg);
       mode = 'markers';
       setStatus(`Real-cut unavailable — adding ${total} markers instead…`, 'busy');
       setProgress(40);
@@ -1144,15 +1146,66 @@ applyBtn.addEventListener('click', async () => {
     } else {
       setStatus(`✓ ${total} cut markers added (fallback mode)`, 'ok');
       applyStatus.innerHTML = '';
-      applyStatus.appendChild(badge(`⚠ ${total} marker${total !== 1 ? 's' : ''} added (auto-cut unavailable on this Premiere build)`, 'warn'));
+      applyStatus.appendChild(badge(`⚠ ${total} marker${total !== 1 ? 's' : ''} added — auto-cut fell back`, 'warn'));
+
+      /* Show why real-cut failed so the user can paste it back to fix v1.0.4 */
+      if (realCutErrorMsg) {
+        const errBox = document.createElement('details');
+        errBox.style.cssText = 'margin-top:6px;font-size:10px;color:var(--dim)';
+        errBox.innerHTML =
+          '<summary style="cursor:pointer;color:var(--warn)">Why did auto-cut fail? (click to expand)</summary>' +
+          `<pre style="font-size:10px;white-space:pre-wrap;word-break:break-all;color:var(--error);margin-top:4px">${realCutErrorMsg.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</pre>`;
+        applyStatus.appendChild(errBox);
+      }
+
       const hint = document.createElement('div');
-      hint.style.cssText = 'font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5';
+      hint.style.cssText = 'font-size:11px;color:var(--dim);margin-top:8px;line-height:1.5';
       hint.innerHTML =
-        '<b>Markers placed.</b> To remove each cut range manually:<br>' +
-        '• <kbd>Shift+M</kbd> jumps to next marker<br>' +
-        '• <kbd>Q</kbd> / <kbd>W</kbd> set in/out at marker bounds<br>' +
-        '• <kbd>Shift+Delete</kbd> ripple-deletes the range';
+        '<b>Two ways forward:</b><br>' +
+        '<b>A.</b> Click <b>Delete all markers</b> below to clean up, then send me the error above.<br>' +
+        '<b>B.</b> Manually ripple-delete each marker:<br>' +
+        '&nbsp;&nbsp;• <kbd>Shift+M</kbd> jumps to next marker<br>' +
+        '&nbsp;&nbsp;• <kbd>Q</kbd> / <kbd>W</kbd> set in/out at marker bounds<br>' +
+        '&nbsp;&nbsp;• <kbd>Shift+Delete</kbd> ripple-deletes the range';
       applyStatus.appendChild(hint);
+
+      /* Cleanup button — removes every marker we just added in one transaction */
+      const cleanupBtn = document.createElement('button');
+      cleanupBtn.textContent = '🗑 Delete all Filler Remover markers';
+      cleanupBtn.style.cssText =
+        'margin-top:10px;width:100%;padding:8px;background:#3a2222;color:#e0a0a0;' +
+        'border:1px solid #5a3030;border-radius:4px;cursor:pointer;font-size:11px';
+      cleanupBtn.onmouseenter = () => cleanupBtn.style.background = '#4a2828';
+      cleanupBtn.onmouseleave = () => cleanupBtn.style.background = '#3a2222';
+      cleanupBtn.addEventListener('click', async () => {
+        cleanupBtn.disabled = true;
+        cleanupBtn.textContent = 'Deleting…';
+        try {
+          const ppro2 = require('premierepro');
+          const seq2  = await resolveActiveSequence(ppro2);
+          const proj2 = await ppro2.Project.getActiveProject();
+          const m2    = await ppro2.Markers.getMarkers(seq2);
+          const list  = m2.getMarkers ? m2.getMarkers() : [];
+          let removed = 0;
+          const ok = proj2.executeTransaction(compound => {
+            for (const mk of list) {
+              const name = (mk && typeof mk.getName === 'function')
+                ? '' : (mk.name || ''); /* prefer prop, fall back to method below */
+              const nm = (mk.name !== undefined ? mk.name : '');
+              if (typeof nm === 'string' && nm.startsWith('CUT ')) {
+                const a = m2.createRemoveMarkerAction(mk);
+                if (a) { compound.addAction(a); removed++; }
+              }
+            }
+          }, 'Filler Remover — delete cut markers');
+          cleanupBtn.textContent = ok
+            ? `✓ Removed ${removed} marker${removed !== 1 ? 's' : ''} (Ctrl+Z to restore)`
+            : '✗ Cleanup transaction refused';
+        } catch (e) {
+          cleanupBtn.textContent = '✗ ' + (e && e.message ? e.message.split('\n')[0] : 'cleanup failed');
+        }
+      });
+      applyStatus.appendChild(cleanupBtn);
     }
     applyStatus.style.display = '';
     selectedIdx.clear();
