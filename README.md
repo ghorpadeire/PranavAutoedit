@@ -109,6 +109,7 @@ docker-compose run api python -m unittest discover -s tests -v
 | 📂 **Get Transcript** | Opens a file picker — select the `.json` exported from Premiere |
 | ▶ **Analyze** | Sends transcript to the backend, waits ~10–15 s, shows results |
 | 📊 **Results** | Cut list sorted by timestamp — blue = remove, amber = review manually |
+| ✂ **Apply Cuts** | Razor-cuts the active sequence at every confirmed timestamp, then ripple-deletes the segments. Processes end → start so earlier timestamps stay accurate. Press Ctrl+Z to undo any individual cut. |
 | ⚙ **Advanced** | Change backend URL (for cloud) and product key |
 
 **How to export the transcript from Premiere:**
@@ -205,6 +206,7 @@ docker run pranavautoedit python -m unittest discover -s tests -v
 | #4 | ✅ merged | `pipeline.py` — full orchestrator |
 | #5 | ✅ merged | Docker + Compose + expanded CI |
 | #6 | ✅ ready  | `api.py` — FastAPI REST service |
-| #7 | ✅ ready  | UXP Premiere plugin |
-| #8 | 🔜 next   | Async jobs + Redis + cloud deploy (Railway/Render) |
-| #9 | 🔜 future | Apply cuts directly to Premiere timeline |
+| #7 | ✅ ready  | UXP Premiere plugin (analyze + show results) |
+| #8 | ✅ ready  | "Apply Cuts to Timeline" button — Premiere UXP API cuts sequence automatically |
+| #9 | 🔜 next   | Package as `.ccx` installer — client double-clicks to install, no dev tools needed |
+| #10 | 🔜 future | Cloud deploy (Railway/Render) — plugin points to cloud URL, no local server needed |

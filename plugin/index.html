@@ -159,6 +159,21 @@
     details[open] summary { margin-bottom: 6px; }
 
     .adv-grid { display: flex; flex-direction: column; gap: 6px; }
+
+    /* ── Apply cuts section ── */
+    .btn-success { background: var(--success); color: #fff; width: 100%; font-weight: 600; }
+
+    .warn-box {
+      font-size: 11px;
+      background: #3a2c00;
+      border: 1px solid var(--warn);
+      border-radius: var(--radius);
+      padding: 6px 8px;
+      color: var(--warn);
+      line-height: 1.6;
+    }
+
+    #applySection { display: none; }
   </style>
 </head>
 
@@ -202,6 +217,18 @@
       <button class="btn-secondary btn-sm" id="copyFinalBtn">📋 Copy cuts JSON</button>
       <button class="btn-secondary btn-sm" id="copyAllBtn">📋 Copy full report</button>
     </div>
+  </section>
+
+  <!-- ── 4b. Apply Cuts to Timeline ───────────────── -->
+  <section id="applySection">
+    <h3>✂ Apply Cuts to Timeline</h3>
+    <div class="warn-box">
+      ⚠ Backup first: right-click your sequence in the Project panel → <em>Duplicate</em>,
+      then click Apply.  You can undo individual cuts with Ctrl+Z afterward.
+    </div>
+    <button class="btn-success" id="applyBtn">✂&nbsp; Apply Cuts to Timeline</button>
+    <div id="applyProgress" class="dim" style="display:none"></div>
+    <div id="applyStatus"   style="display:none"></div>
   </section>
 
   <!-- ── 5. Advanced settings ──────────────────────── -->
@@ -254,6 +281,10 @@ const backendUrlEl   = $('backendUrl');
 const productKeyEl   = $('productKey');
 const saveAdvBtn     = $('saveAdvBtn');
 const advStatus      = $('advStatus');
+const applySection   = $('applySection');
+const applyBtn       = $('applyBtn');
+const applyProgress  = $('applyProgress');
+const applyStatus    = $('applyStatus');
 
 /* ── Secure storage helpers ───────────────────────── */
 async function secureGet(key) {
@@ -354,7 +385,8 @@ browseBtn.addEventListener('click', async () => {
       + '  (' + parsed.segments.length + ' segments)';
     fileLabel.className = 'ok';
     resultsSection.style.display = 'none';
-    analyzeError.style.display = 'none';
+    applySection.style.display   = 'none';
+    analyzeError.style.display   = 'none';
     lastResult = null;
     refreshReady();
 
@@ -373,10 +405,13 @@ analyzeBtn.addEventListener('click', async () => {
   const productKey = productKeyEl.value.trim();
 
   /* Loading state */
-  analyzeBtn.disabled       = true;
-  spinner.className         = 'on';
-  analyzeError.style.display = 'none';
+  analyzeBtn.disabled          = true;
+  spinner.className            = 'on';
+  analyzeError.style.display   = 'none';
   resultsSection.style.display = 'none';
+  applySection.style.display   = 'none';   // hide until new results arrive
+  applyProgress.style.display  = 'none';
+  applyStatus.style.display    = 'none';
 
   try {
     const response = await fetch(`${backendUrl}/v1/analyze-raw`, {
@@ -399,6 +434,14 @@ analyzeBtn.addEventListener('click', async () => {
     lastResult = result;
     renderResults(result);
     resultsSection.style.display = '';
+
+    // Show Apply section only when there are confirmed cuts to apply
+    if (result.final_count > 0) {
+      applySection.style.display  = '';
+      applyProgress.style.display = 'none';
+      applyStatus.style.display   = 'none';
+      applyBtn.disabled           = false;
+    }
 
   } catch (err) {
     analyzeError.textContent   = '✗ ' + err.message;
@@ -476,6 +519,112 @@ copyAllBtn.addEventListener('click', () =>
     '📋 Copy full report'
   )
 );
+
+/* ── Apply Cuts to Timeline ───────────────────────── */
+
+/**
+ * Helper — show a success or error message under the Apply button.
+ */
+function showApplyStatus(msg, type) {
+  applyStatus.textContent = msg;
+  applyStatus.className   = type === 'error' ? 'error' : 'success';
+  applyStatus.style.display = '';
+}
+
+applyBtn.addEventListener('click', async () => {
+  if (!lastResult || !lastResult.final || lastResult.final.length === 0) {
+    showApplyStatus('✗ No confirmed cuts to apply — run Analyze first.', 'error');
+    return;
+  }
+
+  /* Load the Premiere Pro UXP scripting module */
+  let ppro;
+  try {
+    ppro = require('premierepro');
+  } catch (err) {
+    showApplyStatus(
+      '✗ Premiere Pro API unavailable — make sure this plugin is running inside Premiere Pro.',
+      'error'
+    );
+    return;
+  }
+
+  applyBtn.disabled         = true;
+  applyProgress.textContent = 'Connecting to Premiere…';
+  applyProgress.style.display = '';
+  applyStatus.style.display   = 'none';
+
+  try {
+    /* Get the currently open sequence */
+    const sequence = await ppro.app.getActiveSequence();
+    if (!sequence) {
+      throw new Error(
+        'No active sequence found — open a sequence in the Timeline panel first.'
+      );
+    }
+
+    /*
+     * Process cuts in REVERSE timestamp order (end → start).
+     * Ripple-deleting a segment shifts everything after it leftward,
+     * so processing from the end preserves all earlier timestamps.
+     */
+    const cuts  = [...lastResult.final].sort((a, b) => b.start - a.start);
+    const total = cuts.length;
+
+    for (let i = 0; i < cuts.length; i++) {
+      const cut = cuts[i];
+      applyProgress.textContent = `Cutting ${i + 1} of ${total}…`;
+
+      /* Build Time objects for each boundary */
+      const tStart    = new ppro.Time();
+      tStart.seconds  = cut.start;
+      const tEnd      = new ppro.Time();
+      tEnd.seconds    = cut.end;
+
+      /* Razor at end first, then start (both within the same "frame" of reverse order) */
+      sequence.razor(tEnd);
+      sequence.razor(tStart);
+
+      /*
+       * Collect every track (video + audio) and delete any clip
+       * whose range falls inside [cut.start, cut.end].
+       * We snapshot the clips array before iterating because removing
+       * a clip changes the live collection.
+       */
+      const allTracks = [
+        ...sequence.videoTracks,
+        ...sequence.audioTracks,
+      ];
+
+      const eps = 0.02;   // 20 ms tolerance for floating-point boundaries
+
+      for (const track of allTracks) {
+        const clips = [...track.clips];   // snapshot
+        for (const clip of clips) {
+          const cs = clip.start.seconds;
+          const ce = clip.end.seconds;
+          /* Delete clips fully inside the cut window */
+          if (cs >= cut.start - eps && ce <= cut.end + eps && cs < ce) {
+            clip.remove(true, true);   // rippleDelete=true, alignToVideo=true
+          }
+        }
+      }
+    }
+
+    applyProgress.style.display = 'none';
+    showApplyStatus(
+      `✓ ${total} cut${total !== 1 ? 's' : ''} applied! `
+      + 'Press Ctrl+Z to undo any individual cut.',
+      'success'
+    );
+
+  } catch (err) {
+    applyProgress.style.display = 'none';
+    showApplyStatus('✗ ' + err.message, 'error');
+  } finally {
+    applyBtn.disabled = false;
+  }
+});
 
 /* ── Save advanced settings ───────────────────────── */
 saveAdvBtn.addEventListener('click', async () => {
